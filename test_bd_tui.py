@@ -12,10 +12,12 @@ Runs from any directory with no venv, because uv installs Textual from the scrip
 The fixture is synthetic, so that the repo holds no real beads.
 """
 import asyncio
+import copy
 import importlib.machinery
 import importlib.util
 import io
 import os
+import re
 import sys
 
 from rich.console import Console
@@ -56,7 +58,8 @@ ROWS = [
          notes="2026-11-03: Needs from Ben:\n- pick an export size"),
     bead("ent-aaa.4", priority=0, labels=["area:alpha"], dependencies=[child("ent-aaa")]),
     bead("ent-aaa.5", status="closed", closed_at="2026-11-04T00:00:00Z", labels=["area:alpha"],
-         close_reason="Done 3.\nNeeds from Ben:\n- ship A or B", dependencies=[child("ent-aaa")]),
+         close_reason="Done 3.\nFollow-ups:\n- ent-aaa.4 load test at full size\n- a doc for the export\n"
+                      "Needs from Ben:\n- ship A or B", dependencies=[child("ent-aaa")]),
     bead("ent-aaa.6", status="closed", closed_at="2026-11-04T00:00:00Z", labels=["area:alpha", "reviewed"],
          close_reason="Done 4.", dependencies=[child("ent-aaa")]),
     bead("ent-aaa.7", labels=["area:alpha", "kind:decision"], dependencies=[child("ent-aaa")]),
@@ -227,6 +230,40 @@ async def check_synthetic() -> None:
         await pilot.press("escape")
         await pilot.pause()
         check(not isinstance(app.screen, tui.AskScreen), "Esc closes the prompt")
+
+    # m adds or removes the reviewed label through a fake bd call that edits a private copy of the rows.
+    rows, calls = copy.deepcopy(ROWS), []
+
+    def fake_set_reviewed(bid: str, reviewed: bool) -> None:
+        calls.append((bid, reviewed))
+        labels = next(r for r in rows if r["id"] == bid)["labels"]
+        labels.append("reviewed") if reviewed else labels.remove("reviewed")
+
+    app = tui.BeadBoard(load_rows=lambda: rows, load_sessions=None, set_reviewed=fake_set_reviewed)
+    async with app.run_test(size=(200, 60)) as pilot:
+        await settle(app, pilot)
+        tree = app.query_one(tui.BeadTree)
+        tree.move_cursor(bead_nodes(app)["ent-aaa.1"])
+        await pilot.press("m")
+        await settle(app, pilot)
+        check(calls == [], "m on an open bead changes no label")
+        await pilot.press("c")
+        await settle(app, pilot)
+        tree.move_cursor(bead_nodes(app)["ent-aaa.5"])
+        await pilot.pause()
+        body = plain(app.detail)
+        check("Follow-ups  1 unfiled" in body and re.search(r"\.4\s+load test at full size", body) is not None
+              and re.search(r"⚑ unfiled\s+a doc for the export", body) is not None,
+              "the detail lists follow-ups, with the filed one's id and the unfiled one marked")
+        await pilot.press("m")
+        await settle(app, pilot)
+        check(calls == [("ent-aaa.5", True)] and not app.beads["ent-aaa.5"]["awaiting"],
+              "m on a result to review adds the reviewed label, and the reload shows it reviewed")
+        tree.move_cursor(bead_nodes(app)["ent-aaa.5"])
+        await pilot.press("m")
+        await settle(app, pilot)
+        check(calls[-1] == ("ent-aaa.5", False) and app.beads["ent-aaa.5"]["awaiting"],
+              "m on a reviewed result removes the label again")
 
 
 async def main() -> int:

@@ -1,46 +1,39 @@
-"""Derive the fields that both bead boards show, from one `bd export`.
+"""Derive the fields that bd-tui shows, from one `bd export`.
 
-bd-tui (the terminal board) and bd-board (a browser board) each keep an identical copy of this
-module, so that a bead's warning flags, Done when checks, Needs from Ben list, newest note and
-Today section are the same on both boards. A change goes into both copies, and an empty `diff`
-of the two files checks that they still agree. The module uses only the standard library,
-because bd-board runs on the system python3 without third-party packages. It also holds the bd
-and claude calls that both boards make: the export, and the start and listing of Claude
-sessions named after a bead.
-
-`enrich(rows)` returns every bead keyed by id, with the export's own fields plus the derived
-ones. The derived fields keep the names that bd-board's page reads, such as `needsYou`, so the
-page and this module share one name per field. The rules follow the `bead` skill:
+`enrich(rows)` returns every bead keyed by id, with the export's own fields plus derived ones,
+such as `needsYou`, `flags` and `ifSkipped`. The rules for each come from rules/beads.md:
 
   - kind: a `kind:<x>` label, then bd's issue type, then a guess from the title.
   - needsYou: a Needs from Ben list in an open bead's newest dated note or description, or in
     an unreviewed closed bead's close reason; a `needs:ben` label; or an open, unblocked
     decision bead. A sentence that asks Ben in prose counts when no list exists.
-  - flags: the structural checks from the writing rules, such as a missing `## Summary`.
-  - today_sections: Now, Decide, Judge and Skim, each a list of ids in the page's order.
+  - flags: the structural checks from the rules, such as a missing `## Summary`.
 
-The regular expressions are ports of the page's JavaScript ones. JavaScript's \\w, \\b and \\d
-are ASCII-only, so they are spelled out as ASCII classes here, while \\s stays Unicode in both.
+The module also holds every bd and claude call that bd-tui makes: the export, the reviewed
+label, and the start and listing of Claude sessions named after a bead. It uses only the
+standard library, so that any script can import it without a venv.
+
+The regular expressions treat \\w, \\b and \\d as ASCII-only, so they are spelled out as ASCII
+classes, while \\s stays Unicode.
 """
 import json
 import os
 import re
 import subprocess
 import sys
-from datetime import datetime
 
 REVIEWED = "reviewed"
 NEEDS = "needs:ben"
 BEAD_ID = re.compile(r"^[a-z][a-z0-9]*-[a-z0-9]+(\.\d+)*$")
-# A bead id inside prose, as the page links it.
+# A bead id inside prose.
 BEAD_RE = re.compile(r"(?<![A-Za-z0-9_/-])([a-z][a-z0-9]*-[a-z0-9]{2,}(?:\.[0-9]+)*)(?![A-Za-z0-9_/-])")
 DATE_RE = re.compile(r"^\s*\**\s*([0-9]{4}-[0-9]{2}-[0-9]{2})")
 ITEM_RE = re.compile(r"^(?:[-*+]|[0-9]+[.)])\s+")
 BULLET_RE = re.compile(r"^\s*(?:[-*]|[0-9]+\.)\s+(.*)$")
 FOLLOWUPS = r"follow[- ]?ups?"
 ASK_HEADER = r"needs from ben|needs ben|open for ben|ben to decide"
-W = r"(?<![A-Za-z0-9_])"  # JavaScript's \b before a word character
-E = r"(?![A-Za-z0-9_])"  # JavaScript's \b after a word character
+W = r"(?<![A-Za-z0-9_])"  # an ASCII-only \b before a word character
+E = r"(?![A-Za-z0-9_])"  # an ASCII-only \b after a word character
 # Beads written before the Needs from Ben convention ask in prose, so sentences that ask Ben count too.
 ASK_RE = re.compile(W + r"(open for ben|ben'?s (call|confirmation|decision|approval|review)|ben to (decide|confirm|approve|"
                     r"review|merge)|needs? (ben|[^.;]{0,20}approval|sign-?off)|awaits? ben|(spend|budget) approval)", re.I)
@@ -86,6 +79,17 @@ def default_beads_dir() -> None:
 def export_beads() -> list[dict]:
     out = subprocess.run(["bd", "export"], capture_output=True, text=True, check=True).stdout
     return [json.loads(line) for line in out.splitlines() if line.strip()]
+
+
+def set_reviewed(bead_id: str, reviewed: bool) -> None:
+    """Add a closed bead's reviewed label, or remove it again.
+
+    Only Ben's m key in bd-tui calls this, because the rules reserve the reviewed label for Ben.
+    """
+    if not BEAD_ID.match(bead_id):
+        raise ValueError(f"not a bead id: {bead_id!r}")
+    subprocess.run(["bd", "label", "add" if reviewed else "remove", bead_id, REVIEWED],
+                   capture_output=True, text=True, check=True)
 
 
 def child_env() -> dict:
@@ -154,16 +158,6 @@ def bead_sessions(bead_id: str) -> list[dict]:
 
 
 # ---------- derived fields ----------
-
-def ms(s: str | None) -> float:
-    """Milliseconds since the epoch, as the page's Date.parse gives them; 0 for no date."""
-    if not s:
-        return 0
-    try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() * 1000
-    except ValueError:
-        return 0
-
 
 def kind_of(b: dict) -> dict:
     """The kind comes from a kind:<x> label, then bd's own issue type, then a guess from the text."""
@@ -456,35 +450,7 @@ def enrich(rows: list[dict]) -> dict[str, dict]:
     return beads
 
 
-# ---------- Today and the thread tree ----------
-
-def open_blocks(beads: dict, b: dict) -> int:
-    return 0 if b["status"] == "closed" else sum(1 for x in b["blocks"] if beads[x]["status"] != "closed")
-
-
-def skimmable(b: dict) -> bool:
-    return b["ben"] == "none" or (not b["ben"] and b["kind"]["name"] not in ("experiment", "analysis", "decision"))
-
-
-def today_sections(beads: dict) -> dict[str, list[str]]:
-    """Now, Decide, Judge and Skim as id lists. One bead lands in at most one of Decide, Judge and Skim."""
-    every = list(beads.values())
-    beat = lambda b: ms(b.get("heartbeat_at") or b.get("started_at") or b.get("updated_at"))
-    now = sorted((b for b in every if b["status"] == "in_progress" and b.get("issue_type") != "epic"), key=beat, reverse=True)
-    # Most unblocked first, then newest update: two stable passes, because one key is a descending string.
-    decide = sorted((b for b in every if b["needsYou"]), key=lambda b: b.get("updated_at") or "", reverse=True)
-    decide = sorted(decide, key=lambda b: open_blocks(beads, b), reverse=True)
-    results = [b for b in every if b["awaiting"] and not b["needsYou"]]
-    judge = sorted((b for b in results if not skimmable(b)), key=lambda b: ms(b.get("closed_at")))
-    skim = [b for b in results if skimmable(b)]
-    return {k: [b["id"] for b in v] for k, v in (("now", now), ("decide", decide), ("judge", judge), ("skim", skim))}
-
-
-def payload(rows: list[dict]) -> dict:
-    """What bd-board's page reads: every bead with its derived fields, and the Today sections."""
-    beads = enrich(rows)
-    return {"beads": list(beads.values()), "today": today_sections(beads)}
-
+# ---------- the thread tree ----------
 
 def epic_of(beads: dict, bead_id: str) -> str | None:
     """The top epic above a bead, or None for a bead outside every epic."""
