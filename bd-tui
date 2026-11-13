@@ -1,0 +1,786 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["textual==8.2.8"]
+# ///
+"""Show what Claude is working on and where Ben is needed, as a bead tree in the terminal.
+
+The board runs in one tmux pane beside `claude agents`. Its tree opens on the Now view: every
+open bead that is in progress or needs Ben, grouped by area and then by epic. The detail pane
+below the tree leads with what the epic's goal loses if the bead is skipped. The fields come
+from bead_model.py, which the browser board bd-board keeps an identical copy of, so both boards
+agree on which beads need Ben.
+
+  bd-tui                 open the board in this terminal
+  bd-tui --window        inside tmux: open a window with claude agents on the left, bd-tui on the right
+  bd-tui --export FILE   read a saved `bd export` instead of running bd (r reloads the file)
+
+Keys never use Ctrl-h, Ctrl-j, Ctrl-k or Ctrl-l, because vim-tmux-navigator moves between
+panes with them. Marking a result reviewed stays in bd-board.
+
+Text is plain weight by default. Bold marks only a bead's title and the section headings, and
+colour carries status, so a narrow pane still reads at a glance.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from collections.abc import Callable
+
+from rich.console import Group, RenderableType
+from rich.table import Table
+from rich.text import Text
+from textual import work
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Vertical, VerticalScroll
+from textual.screen import ModalScreen
+from textual.widgets import Input, Static, Tree
+from textual.widgets.tree import TreeNode
+
+import bead_model as bm
+
+# Build mixed-style text with Text.assemble or Text().append: rich.text.Text(..., style=X) makes X the
+# base style of the whole Text, so everything later added to it inherits X.
+
+# A soft palette that reads on a dark terminal background.
+HEAD = "bold #89b4fa"  # section headings
+ID = "#89dceb"  # bead and epic ids
+MUTED = "#9399b2"  # labels, separators, counts
+WARM = "#fab387"  # "slips:" and "changes:", blocked
+STATUS_STYLE = {"prog": "#89b4fa", "ready": "", "blocked": WARM, "deferred": MUTED, "closed": "#a6e3a1"}
+NEEDS_STYLE = "bold #f9e2af"
+REVIEW_STYLE = "#cba6f7"
+SESSION_STYLE = {"working": "#a6e3a1", "blocked": "#f9e2af", "done": MUTED}
+BAR_STYLE = {"closed": "#a6e3a1", "prog": "#89b4fa", "blocked": WARM}
+STATUS_MARK = {"prog": "◐", "ready": " ", "blocked": "⊘", "deferred": "◌", "closed": "✓"}
+STATUS_WORD = {"prog": "working", "ready": "ready", "blocked": "blocked", "deferred": "deferred", "closed": "closed"}
+NO_AREA = "no area"
+NOTE_LINES, NOTE_CHARS = 10, 700  # the Latest note stops at whichever comes first; Enter shows the rest
+SESSION_POLL_S = 30
+TMUX_SPLIT = "40%"  # bd-tui's share of the window, so claude agents gets 60%, about 142 of Ben's 238 columns
+BANNED = {"ctrl+h", "ctrl+j", "ctrl+k", "ctrl+l"}
+KEYS = [("j k", "move"), ("h l", "fold"), ("o", "open"), ("c", "closed"), ("v", "unreviewed"), ("p", "path:on"),
+        ("g", "thread order"), ("/", "search"), ("⏎", "nvim"), ("s", "start session"), ("a", "attach"),
+        ("r", "reload"), ("q", "quit")]
+
+
+def short(bead_id: str, epic: str | None) -> str:
+    """A bead's id without its epic's prefix, such as .14 for ent-aaa.14 under ent-aaa."""
+    return bead_id[len(epic):] if epic and bead_id.startswith(epic + ".") else bead_id
+
+
+def note_body(note: dict) -> str:
+    return re.sub(r"^[:\s*]+", "", bm.DATE_RE.sub("", note["text"], count=1))
+
+
+def fit(text: str, width: int) -> str:
+    """Text cut to a column width with an ellipsis, then padded to it."""
+    return (text if len(text) <= width else text[:max(0, width - 1)] + "…").ljust(width)
+
+
+def clip(text: str) -> tuple[str, int]:
+    """The first NOTE_LINES lines or NOTE_CHARS characters of a note, and how many lines were left out.
+
+    The line that crosses the character budget is cut at a word, so a long first paragraph still shows.
+    """
+    lines = text.strip().split("\n")
+    kept, size = [], 0
+    for line in lines:
+        if len(kept) == NOTE_LINES or size >= NOTE_CHARS:
+            break
+        room = NOTE_CHARS - size
+        if len(line) > room:
+            kept.append(line[:room].rsplit(" ", 1)[0] + " …")
+            size = NOTE_CHARS
+            continue
+        kept.append(line)
+        size += len(line)
+    return "\n".join(kept), len(lines) - len(kept)
+
+
+def markdown_lite(text: str) -> Text:
+    """A note's Markdown as terminal text: headings and **bold** in bold, `code` in the id colour, bullets as •."""
+    out = Text()
+    body, more = clip(text)
+    for line in body.split("\n"):
+        heading = re.match(r"^#{1,6}\s+(.*)$", line)
+        if heading:
+            out.append(heading.group(1) + "\n", style="bold")
+            continue
+        line = re.sub(r"^(\s*)[-*]\s+", r"\1• ", line)
+        for part in re.split(r"(\*\*[^*\n]+\*\*|`[^`\n]+`)", line):
+            if part.startswith("**") and part.endswith("**") and len(part) > 4:
+                out.append(part[2:-2], style="bold")
+            elif part.startswith("`") and part.endswith("`") and len(part) > 2:
+                out.append(part[1:-1], style=ID)
+            else:
+                out.append(part)
+        out.append("\n")
+    if more:
+        out.append(f"{more} more lines; Enter opens the whole bead\n", style=MUTED)
+    return out
+
+
+def grid() -> Table:
+    """Two columns, so a wrapped value keeps a hanging indent under its label."""
+    table = Table.grid(padding=(0, 1))
+    table.add_column(no_wrap=True)
+    table.add_column(ratio=1)
+    return table
+
+
+def joined(parts: list[tuple[str, str]], sep: str = " · ") -> Text:
+    """Text from (words, style) pairs with muted separators."""
+    out = Text()
+    for i, (words, style) in enumerate(parts):
+        if i:
+            out.append(sep, style=MUTED)
+        out.append(words, style=style)
+    return out
+
+
+class LineInput(Input, inherit_bindings=False):
+    """Input without Ctrl-k, which vim-tmux-navigator takes for moving between panes."""
+
+    BINDINGS = [b for b in Input.BINDINGS if not BANNED & set(b.key.split(","))]
+
+
+class BeadTree(Tree, inherit_bindings=False):
+    """The thread tree, moved with h j k l as well as the arrows."""
+
+    BINDINGS = [
+        Binding("j,down", "cursor_down", show=False),
+        Binding("k,up", "cursor_up", show=False),
+        Binding("h,left", "fold", show=False),
+        Binding("l,right", "unfold", show=False),
+        Binding("space", "toggle_node", show=False),
+        Binding("pageup", "page_up", show=False),
+        Binding("pagedown", "page_down", show=False),
+        Binding("home", "scroll_home", show=False),
+        Binding("end", "scroll_end", show=False),
+        Binding("enter", "app.open_bead", show=False),
+    ]
+
+    def action_fold(self) -> None:
+        node = self.cursor_node
+        if node is None:
+            return
+        if node.is_expanded and node.children:
+            node.collapse()
+        elif node.parent is not None and node.parent is not self.root:
+            self.move_cursor(node.parent)
+
+    def action_unfold(self) -> None:
+        node = self.cursor_node
+        if node is None or not node.children:
+            return
+        if not node.is_expanded:
+            node.expand()
+        else:
+            self.move_cursor(node.children[0])
+
+
+class AskScreen(ModalScreen[str | None]):
+    """One line of text for the session that `s` starts."""
+
+    DEFAULT_CSS = """
+    AskScreen { align: center middle; }
+    AskScreen > Vertical { width: 90%; max-width: 100; height: auto; border: round $accent; padding: 0 1; background: $panel; }
+    """
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def __init__(self, bead_id: str, keywords: list[str]) -> None:
+        super().__init__()
+        self.bead_id, self.keywords = bead_id, keywords
+
+    def compose(self) -> ComposeResult:
+        mode = f" It starts with {', '.join(self.keywords)} (mode label)." if self.keywords else ""
+        with Vertical():
+            yield Static(f"Start a Claude session on {self.bead_id}. Claude reads the bead, then follows your text.{mode}\n"
+                         "Enter starts it, Esc cancels.")
+            yield LineInput(placeholder=f"What should Claude do with {self.bead_id}?", id="ask")
+
+    def on_mount(self) -> None:
+        self.query_one("#ask", LineInput).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.dismiss(event.value)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class BeadBoard(App):
+    TITLE = "bd-tui"
+    ENABLE_COMMAND_PALETTE = False
+    CSS = """
+    #title { height: 1; background: $boost; padding: 0 1; }
+    #tree { height: 2fr; border-bottom: solid $primary-darken-2; }
+    #detail { height: 3fr; padding: 0 1; }
+    #search { dock: bottom; display: none; border: none; height: 1; padding: 0 1; }
+    #search.on { display: block; }
+    #keys { height: 2; background: $boost; padding: 0 1; }
+    """
+    BINDINGS = [
+        Binding("o", "toggle('show_open')", show=False),
+        Binding("c", "toggle('show_closed')", show=False),
+        Binding("v", "toggle('show_unreviewed')", show=False),
+        Binding("p", "toggle('path_only')", show=False),
+        Binding("g", "thread", show=False),
+        Binding("slash", "search", show=False),
+        Binding("escape", "clear_search", show=False),
+        Binding("r", "reload", show=False),
+        Binding("s", "start_session", show=False),
+        Binding("a", "attach", show=False),
+        Binding("q", "quit", show=False),
+    ]
+
+    def __init__(self, load_rows: Callable[[], list[dict]] = bm.export_beads,
+                 load_sessions: Callable[[], list[dict]] | None = lambda: bm.list_sessions(False)) -> None:
+        super().__init__()
+        self.load_rows, self.load_sessions = load_rows, load_sessions
+        self.beads: dict[str, dict] = {}
+        self.sessions: dict[str, str] = {}  # bead id -> the liveliest state of its sessions
+        self.show_open = self.show_closed = self.show_unreviewed = self.path_only = False
+        self.thread_view = False
+        self.query_text = ""
+        self.expanded: set[str] | None = None  # None until the first tree, which opens the first area
+        self.read_at = 0.0
+        self.error = ""
+        self.detail: RenderableType = Text("")  # what the detail pane shows, kept for the headless test
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="title")
+        yield BeadTree("beads", id="tree")
+        with VerticalScroll(id="detail"):
+            yield Static(id="body")
+        yield LineInput(placeholder="search ids and titles · Enter keeps it · Esc clears", id="search")
+        yield Static(id="keys")
+
+    def on_mount(self) -> None:
+        tree = self.query_one(BeadTree)
+        tree.show_root = False
+        tree.guide_depth = 3
+        tree.focus()
+        self.render_keys()
+        self.action_reload()
+        if self.load_sessions:
+            self.set_interval(SESSION_POLL_S, self.refresh_sessions)
+
+    def on_resize(self) -> None:
+        self.render_keys()
+        if self.beads:
+            self.rebuild()
+
+    # ---------- data ----------
+
+    @work(thread=True, exclusive=True, group="export")
+    def action_reload(self) -> None:
+        try:
+            rows = self.load_rows()
+        except (subprocess.CalledProcessError, OSError, ValueError) as e:
+            msg = (getattr(e, "stderr", "") or str(e)).strip()
+            self.call_from_thread(self.set_error, f"bd export failed: {msg}")
+            return
+        self.call_from_thread(self.set_rows, rows)
+
+    def set_rows(self, rows: list[dict]) -> None:
+        self.beads, self.read_at, self.error = bm.enrich(rows), time.time(), ""
+        self.rebuild()
+        self.refresh_sessions()
+
+    def set_error(self, msg: str) -> None:
+        self.error = msg
+        self.render_title()
+
+    @work(thread=True, exclusive=True, group="sessions")
+    def refresh_sessions(self) -> None:
+        if not self.load_sessions:
+            return
+        try:
+            sessions = self.load_sessions()
+        except (subprocess.SubprocessError, OSError, ValueError):
+            return
+        rank = {"working": 0, "blocked": 1, "done": 2}
+        live: dict[str, str] = {}
+        for s in sessions:
+            bead_id = (s.get("name") or "").split(" ")[0]
+            state = s.get("state") or "done"
+            if bm.session_bead(s.get("name"), bead_id) and rank.get(state, 3) < rank.get(live.get(bead_id, ""), 4):
+                live[bead_id] = state
+        self.call_from_thread(self.set_sessions, live)
+
+    def set_sessions(self, live: dict[str, str]) -> None:
+        if live != self.sessions:
+            self.sessions = live
+            self.rebuild()
+
+    # ---------- tree ----------
+
+    def shown(self) -> list[str]:
+        """The beads the tree lists: the Now rule plus the o, c and v views, or the search matches."""
+        q = self.query_text.lower()
+        out = []
+        for b in self.beads.values():
+            if b.get("issue_type") == "epic":
+                continue
+            if q:
+                ok = q in b["id"].lower() or q in (b.get("title") or "").lower()
+            else:
+                ok = (bm.needs_ben_now(b) or (self.show_open and b["status"] != "closed")
+                      or (self.show_closed and b["status"] == "closed") or (self.show_unreviewed and b["awaiting"]))
+            if ok and (not self.path_only or "path:on" in b["labels"]):
+                out.append(b["id"])
+        return out
+
+    def groups(self) -> list[tuple[str, list[tuple[str | None, list[str]]]]]:
+        """The shown beads as [(area, [(epic id or None, [bead ids])])], busiest area and epic first."""
+        tree: dict[str, dict[str | None, list[str]]] = {}
+        for bid in self.shown():
+            area = bm.area_of(self.beads, bid) or NO_AREA
+            tree.setdefault(area, {}).setdefault(bm.epic_of(self.beads, bid), []).append(bid)
+        heat = lambda ids: -sum(self.is_working(i) + self.needs_you(i) for i in ids)
+        bead_key = lambda i: (not self.is_working(i), not self.needs_you(i), bm.RANK[self.beads[i]["bucket"]], bm.id_key(i))
+        out = []
+        for area, epics in tree.items():
+            ordered = sorted(epics.items(), key=lambda e: (e[0] is None, heat(e[1]), bm.id_key(e[0] or "")))
+            out.append((area, [(e, sorted(ids, key=bead_key)) for e, ids in ordered]))
+        return sorted(out, key=lambda a: (a[0] == NO_AREA, heat([i for _, ids in a[1] for i in ids]), a[0]))
+
+    def is_working(self, bid: str) -> bool:
+        return self.beads[bid]["status"] == "in_progress"
+
+    def needs_you(self, bid: str) -> bool:
+        return self.beads[bid]["needsYou"]
+
+    def counts(self, ids: list[str]) -> Text:
+        """How many listed beads are in progress and need Ben, with the marks the bead rows use."""
+        w = sum(1 for i in ids if self.is_working(i))
+        y = sum(1 for i in ids if self.needs_you(i) and self.beads[i]["status"] != "closed")
+        out = Text()
+        if w:
+            out.append(f"  ◐{w}", style=STATUS_STYLE["prog"])
+        if y:
+            out.append(f"  ?{y}", style=NEEDS_STYLE)
+        return out
+
+    def area_label(self, area: str, ids: list[str]) -> Text:
+        return Text.assemble((area, HEAD), self.counts(ids))
+
+    def epic_label(self, epic: str | None, ids: list[str], width: int) -> Text:
+        if epic is None:
+            return Text("No epic") + self.counts(ids)
+        e, kids = self.beads[epic], bm.descendants(self.beads, epic)
+        n = {k: sum(1 for i in kids if self.beads[i]["bucket"] == k) for k in BAR_STYLE}
+        t = Text()
+        t.append(epic, style=ID)
+        t.append(" " + fit(e.get("title") or "", max(0, width - len(epic) - 1)) + " ")
+        cells = {k: round(10 * v / len(kids)) if kids else 0 for k, v in n.items()}
+        for k, c in cells.items():
+            t.append("█" * c, style=BAR_STYLE[k])
+        t.append("░" * max(0, 10 - sum(cells.values())), style=MUTED)
+        t.append(f" {n['closed']}/{len(kids)}", style=MUTED)
+        return t + self.counts(ids)
+
+    def bead_label(self, bid: str, epic: str | None, width: int) -> Text:
+        b = self.beads[bid]
+        state = self.sessions.get(bid)
+        t = Text()
+        t.append("●" if state else " ", style=SESSION_STYLE.get(state or "", MUTED))
+        t.append(STATUS_MARK[b["bucket"]], style=STATUS_STYLE[b["bucket"]])
+        t.append("?" if b["needsYou"] else "◇" if b["awaiting"] else " ", style=NEEDS_STYLE if b["needsYou"] else REVIEW_STYLE)
+        t.append(" " + short(bid, epic).ljust(6) + " ", style=ID)
+        t.append(fit(b.get("title") or "", width))
+        path = "on" if "path:on" in b["labels"] else "off" if "path:off" in b["labels"] else "–"
+        t.append(" " + path, style="" if path == "on" else MUTED)
+        return t
+
+    def rebuild(self) -> None:
+        tree = self.query_one(BeadTree)
+        keep = tree.cursor_node.data if tree.cursor_node else None
+        # The tree's guides, marks, id and path take about 22 columns of a bead row and 32 of an epic row.
+        pane = tree.size.width or self.size.width
+        bead_w, epic_w = max(12, min(100, pane - 22)), max(12, min(90, pane - 32))
+        groups = self.groups()
+        if self.expanded is None and groups:  # the first tree opens the busiest area and its epics
+            area = groups[0][0]
+            self.expanded = {f"a:{area}"} | {f"e:{area}/{e}" for e, _ in groups[0][1]}
+        searching = bool(self.query_text)
+        self.rebuilding = True
+        tree.clear()
+        target: TreeNode | None = None
+        for area, epics in groups:
+            all_ids = [i for _, ids in epics for i in ids]
+            an = tree.root.add(self.area_label(area, all_ids), data=("area", area),
+                               expand=searching or f"a:{area}" in (self.expanded or set()))
+            for epic, ids in epics:
+                en = an.add(self.epic_label(epic, ids, epic_w), data=("epic", epic, area),
+                            expand=searching or f"e:{area}/{epic}" in (self.expanded or set()))
+                for bid in ids:
+                    node = en.add_leaf(self.bead_label(bid, epic, bead_w), data=("bead", bid))
+                    if keep == ("bead", bid):
+                        target = node
+            if keep and keep[0] == "area" and keep[1] == area:
+                target = an
+        self.rebuilding = False
+        self.render_title()
+        self.call_after_refresh(self.restore_cursor, target, keep)
+
+    def restore_cursor(self, target: TreeNode | None, keep) -> None:
+        tree = self.query_one(BeadTree)
+        if target is None:
+            # The first shown bead, so the detail opens on a bead rather than an area.
+            target = next((n for n in self.walk(tree.root) if n.data and n.data[0] == "bead"
+                           and all(p.is_expanded for p in self.ancestors(n))), None)
+        if target is not None and all(p.is_expanded for p in self.ancestors(target)):
+            tree.move_cursor(target)
+        self.show_detail()
+
+    @staticmethod
+    def walk(node: TreeNode):
+        for child in node.children:
+            yield child
+            yield from BeadBoard.walk(child)
+
+    @staticmethod
+    def ancestors(node: TreeNode):
+        p = node.parent
+        while p is not None and not p.is_root:
+            yield p
+            p = p.parent
+
+    def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
+        self.track(event.node, True)
+
+    def on_tree_node_collapsed(self, event: Tree.NodeCollapsed) -> None:
+        self.track(event.node, False)
+
+    def track(self, node: TreeNode, expanded: bool) -> None:
+        if getattr(self, "rebuilding", False) or self.query_text or not node.data or self.expanded is None:
+            return
+        key = f"a:{node.data[1]}" if node.data[0] == "area" else f"e:{node.data[2]}/{node.data[1]}"
+        (self.expanded.add if expanded else self.expanded.discard)(key)
+
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        self.show_detail()
+
+    # ---------- detail ----------
+
+    def selected(self) -> tuple | None:
+        node = self.query_one(BeadTree).cursor_node
+        return node.data if node is not None else None
+
+    def show_detail(self) -> None:
+        data = self.selected()
+        if not data:
+            self.detail = Text("Nothing to show. o adds every open bead, c closed beads, v unreviewed results.", style=MUTED)
+        elif self.thread_view and data[0] != "area":
+            self.detail = self.thread_text(data[1] if data[0] == "epic" else bm.epic_of(self.beads, data[1]))
+        elif data[0] == "bead":
+            self.detail = self.bead_text(data[1])
+        elif data[0] == "epic":
+            self.detail = self.epic_text(data[1]) if data[1] else Text("Beads without an epic.", style=MUTED)
+        else:
+            self.detail = self.area_text(data[1])
+        self.query_one("#body", Static).update(self.detail)
+        self.query_one("#detail").scroll_home(animate=False)
+
+    def status_line(self, bid: str, words: list[tuple[str, str]]) -> Text:
+        return joined([(bid, ID), *words, (f"P{self.beads[bid].get('priority', '')}", MUTED)])
+
+    def bead_text(self, bid: str) -> Group:
+        """The approved order: why it is listed, If skipped, labels, Done when, thread, latest note."""
+        b, epic = self.beads[bid], bm.epic_of(self.beads, bid)
+        why = [(STATUS_WORD[b["bucket"]], STATUS_STYLE[b["bucket"]])]
+        why += [("needs you", NEEDS_STYLE)] if b["needsYou"] else []
+        why += [("to review", REVIEW_STYLE)] if b["awaiting"] else []
+        if self.sessions.get(bid):
+            why.append((f"session {self.sessions[bid]}", SESSION_STYLE.get(self.sessions[bid], "")))
+        parts: list[RenderableType] = [self.status_line(bid, why), Text(b.get("title") or "", style="bold")]
+        if b["needsYou"]:
+            asks = grid()
+            for a in b["asks"] or [{"text": "Decision bead, waiting on you" if b["kind"]["name"] == "decision"
+                                    else "Marked needs:ben with no question in its notes"}]:
+                asks.add_row(Text("?", style=NEEDS_STYLE),
+                             Text(a["text"]) + (Text(" (guessed from prose)", style=MUTED) if a.get("prose") else Text("")))
+            parts.append(asks)
+        parts += [Text(""), Text("If skipped", style=HEAD)]
+        s = b["ifSkipped"]
+        if s:
+            lines = grid()
+            for key in ("date", "result", "worst"):
+                value = s.get(key, "–")
+                head, sep, rest = value.partition(": ")
+                if value == "unchanged":
+                    shown = Text(value, style=MUTED)
+                elif sep and head in ("slips", "changes"):
+                    shown = Text.assemble((head + ":", WARM), " " + rest)
+                else:
+                    shown = Text(value)
+                lines.add_row(Text(f" {key}", style=MUTED), shown)
+            parts.append(lines)
+        else:
+            parts.append(Text(" no ## If skipped section", style=MUTED))
+        parts += [Text(""), self.labels_line(b), Text(""), self.done_when(b["checks"], "Done when")]
+        blockers = [x for x in b["blockers"] if self.beads[x]["status"] != "closed"]
+        blocks = [x for x in b["blocks"] if self.beads[x]["status"] != "closed"]
+        thread = Text.assemble(("Thread ", HEAD), (epic or "–", ID if epic else MUTED))
+        for word, xs in (("blocked by", blockers), ("blocks", blocks)):
+            thread.append(f" · {word} ", style=MUTED)
+            thread.append(" ".join(short(x, epic) for x in xs) or "–", style=ID if xs else MUTED)
+        parts += [Text(""), thread]
+        parts.append(Text(""))
+        if b["status"] == "closed":
+            parts += [Text("Result", style=HEAD), markdown_lite(b.get("close_reason") or "Closed without a reason.")]
+        else:
+            note = b["current"]
+            head = Text.assemble(("Latest ", HEAD), (note["date"] if note else "no dated note yet", MUTED))
+            parts += [head] + ([markdown_lite(note_body(note))] if note else [])
+        if b["flags"]:
+            parts.append(Text(f"⚠ {' · '.join(b['flags'])}", style="#f9e2af"))
+        return Group(*parts)
+
+    def done_when(self, checks: dict, heading: str) -> Group:
+        head = Text.assemble((heading, HEAD), (f"  {checks['ticked']}/{checks['n']}" if checks["marked"] else "", MUTED))
+        if not checks["items"]:
+            return Group(head, Text(" none", style=MUTED))
+        rows = grid()
+        for item in checks["items"]:
+            if item.get("head"):
+                rows.add_row(Text(""), Text(item["text"], style=MUTED))
+            elif item["done"]:
+                rows.add_row(Text(" ☑", style="#a6e3a1"), Text(item["text"], style=MUTED))
+            else:
+                rows.add_row(Text(" ☐", style=MUTED), Text(item["text"]))
+        return Group(head, rows)
+
+    @staticmethod
+    def labels_line(b: dict) -> Text:
+        if b.get("issue_type") == "epic":
+            return Text("epic", style=MUTED)
+        run = [f"ben:{b['ben']}" if b["ben"] else "no ben: label"]
+        run += [f"wait:{b['wait']}"] if b["wait"] else []
+        run += [f"mode:{b['mode']}"] if b["mode"] else []
+        kind = f"kind:{b['kind']['name']}" + ("?" if b["kind"]["inferred"] else "")
+        path = next((l for l in b["labels"] if l in ("path:on", "path:off")), "no path: label")
+        words = [(w, MUTED) for w in run + [kind]] + [(path, "" if path == "path:on" else MUTED)]
+        return joined(words + ([("one-shot", "#89b4fa")] if b["oneshot"] else []))
+
+    def epic_text(self, epic: str) -> Group:
+        e, kids = self.beads[epic], bm.descendants(self.beads, epic)
+        n = {k: sum(1 for i in kids if self.beads[i]["bucket"] == k) for k in bm.RANK}
+        you = sum(1 for i in kids if self.beads[i]["needsYou"] and self.beads[i]["status"] != "closed")
+        parts: list[RenderableType] = [
+            self.status_line(epic, [("epic", MUTED), (STATUS_WORD[e["bucket"]], STATUS_STYLE[e["bucket"]])]),
+            Text(e.get("title") or "", style="bold"),
+            joined([(f"{n['closed']}/{len(kids)} closed", MUTED), (f"{n['prog']} working", STATUS_STYLE["prog"]),
+                    (f"{you} need you", NEEDS_STYLE if you else MUTED), (f"{n['ready']} ready", MUTED),
+                    (f"{n['blocked']} blocked", WARM if n["blocked"] else MUTED)]),
+            Text(""), self.done_when(e["checks"], "Goal"), Text("")]
+        note = e["current"]
+        parts.append(Text.assemble(("Latest ", HEAD), (note["date"] if note else "no dated note yet", MUTED)))
+        if note:
+            parts.append(markdown_lite(note_body(note)))
+        parts.append(Text("g shows the thread's open beads in dependency order", style=MUTED))
+        return Group(*parts)
+
+    def area_text(self, area: str) -> Text:
+        ids = [i for i in self.shown() if (bm.area_of(self.beads, i) or NO_AREA) == area]
+        return self.area_label(area, ids) + Text(f"\n{len(ids)} beads listed", style=MUTED)
+
+    def thread_text(self, epic: str | None) -> RenderableType:
+        if epic is None:
+            return Text("This bead has no epic, so it has no thread.", style=MUTED)
+        head = Text.assemble(("Thread ", HEAD), (epic, ID), " " + (self.beads[epic].get("title") or ""))
+        rows = grid()
+        for bid in bm.thread_order(self.beads, epic):
+            b = self.beads[bid]
+            waits = [short(x, epic) for x in b["blockers"] if self.beads[x]["status"] != "closed"]
+            mark = Text.assemble((STATUS_MARK[b["bucket"]], STATUS_STYLE[b["bucket"]]), ("?" if b["needsYou"] else " ", NEEDS_STYLE))
+            title = Text(b.get("title") or "") + (Text(f"  waits on {' '.join(waits)}", style=MUTED) if waits else Text(""))
+            rows.add_row(mark, Text(short(bid, epic), style=ID), title)
+        return Group(head, Text("Open beads in dependency order; g returns to the bead", style=MUTED), Text(""), rows)
+
+    # ---------- chrome ----------
+
+    def render_title(self) -> None:
+        opened = [b for b in self.beads.values() if b["status"] != "closed" and b.get("issue_type") != "epic"]
+        working = sum(1 for b in opened if b["status"] == "in_progress")
+        you = sum(1 for b in opened if b["needsYou"])
+        view = f"search “{self.query_text}”" if self.query_text else "Now" + "".join(
+            f" +{name}" for flag, name in ((self.show_open, "open"), (self.show_closed, "closed"),
+                                           (self.show_unreviewed, "unreviewed")) if flag)
+        view += " · path:on only" if self.path_only else ""
+        parts = [("bd-tui", "bold"), (view, ""), (f"{working} working", STATUS_STYLE["prog"]), (f"{you} need you", NEEDS_STYLE)]
+        if self.read_at:
+            parts.append((f"read {time.strftime('%H:%M', time.localtime(self.read_at))}", MUTED))
+        if self.error:
+            parts.append((self.error.splitlines()[0], "bold #f38ba8"))
+        self.query_one("#title", Static).update(joined(parts))
+
+    def render_keys(self) -> None:
+        """The key list, wrapped to the pane's width, with the views that are on shown in reverse."""
+        on = {"open": self.show_open, "closed": self.show_closed, "unreviewed": self.show_unreviewed,
+              "path:on": self.path_only, "thread order": self.thread_view}
+        width = max(20, (self.size.width or 80) - 2)
+        lines, line, used = [], Text(), 0
+        for key, what in KEYS:
+            size = len(key) + 1 + len(what) + (3 if used else 0)
+            if used and used + size > width:
+                lines.append(line)
+                line, used, size = Text(), 0, size - 3
+            if used:
+                line.append(" · ", style=MUTED)
+            line.append(key, style="bold " + ID)
+            line.append(" " + what, style="reverse" if on.get(what) else MUTED)
+            used += size
+        lines.append(line)
+        keys = self.query_one("#keys", Static)
+        keys.update(Text("\n").join(lines))
+        keys.styles.height = len(lines)
+
+    # ---------- actions ----------
+
+    def action_toggle(self, flag: str) -> None:
+        setattr(self, flag, not getattr(self, flag))
+        self.render_keys()
+        self.rebuild()
+
+    def action_thread(self) -> None:
+        self.thread_view = not self.thread_view
+        self.render_keys()
+        self.show_detail()
+
+    def action_search(self) -> None:
+        box = self.query_one("#search", LineInput)
+        box.add_class("on")
+        box.focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "search":
+            self.query_text = event.value.strip()
+            self.rebuild()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "search":
+            self.query_one(BeadTree).focus()
+
+    def action_clear_search(self) -> None:
+        box = self.query_one("#search", LineInput)
+        if not box.has_class("on"):
+            return
+        box.value = ""
+        box.remove_class("on")
+        self.query_text = ""
+        self.query_one(BeadTree).focus()
+        self.rebuild()
+
+    def selected_id(self) -> str | None:
+        data = self.selected()
+        return data[1] if data and data[0] in ("bead", "epic") and data[1] else None
+
+    def action_open_bead(self) -> None:
+        """Enter: the full `bd show` text, read-only in nvim; on an area, fold it."""
+        data = self.selected()
+        if data and data[0] == "area":
+            self.query_one(BeadTree).action_toggle_node()
+            return
+        bid = self.selected_id()
+        if not bid:
+            return
+        try:
+            text = subprocess.run(["bd", "show", bid], capture_output=True, text=True, check=True,
+                                  env={**os.environ, "NO_COLOR": "1"}).stdout
+        except (subprocess.CalledProcessError, OSError) as e:
+            self.notify(f"bd show failed: {getattr(e, 'stderr', '') or e}", severity="error")
+            return
+        path = os.path.join(tempfile.gettempdir(), f"bd-tui-{bid}.md")
+        with open(path, "w") as f:
+            f.write(text)
+        with self.suspend():
+            subprocess.run(["nvim", "-R", "-c", "setlocal filetype=markdown nomodifiable", path])
+
+    def action_start_session(self) -> None:
+        bid = self.selected_id()
+        if not bid:
+            return
+        keywords = [self.beads[bid]["mode"]] if self.beads[bid]["mode"] in bm.SESSION_KEYWORDS else []
+
+        def launch(ask: str | None) -> None:
+            if ask and ask.strip():
+                self.launch(bid, ask, keywords)
+
+        self.push_screen(AskScreen(bid, keywords), launch)
+
+    @work(thread=True, group="launch")
+    def launch(self, bid: str, ask: str, keywords: list[str]) -> None:
+        try:
+            out = bm.launch_session(bid, ask, keywords)
+        except (ValueError, RuntimeError, subprocess.SubprocessError, OSError) as e:
+            msg = (getattr(e, "stderr", "") or str(e)).strip()
+            self.call_from_thread(self.notify, f"Starting the session failed: {msg}", severity="error", timeout=15)
+            return
+        self.call_from_thread(self.notify, f"Started {out['session']} · {out['name']}\na attaches to it", timeout=10)
+        self.call_from_thread(self.refresh_sessions)
+
+    @work(thread=True, group="attach")
+    def action_attach(self) -> None:
+        bid = self.call_from_thread(self.selected_id)
+        if not bid:
+            return
+        try:
+            sessions = bm.bead_sessions(bid)
+        except (subprocess.SubprocessError, OSError, ValueError) as e:
+            self.call_from_thread(self.notify, f"claude agents failed: {e}", severity="error")
+            return
+        if not sessions:
+            self.call_from_thread(self.notify, f"No session is named after {bid}. s starts one.")
+            return
+        sid = sessions[0]["id"]
+        if not os.environ.get("TMUX"):
+            self.call_from_thread(self.notify, f"Not inside tmux. Run: claude attach {sid}", timeout=15)
+            return
+        try:
+            subprocess.run(["tmux", "new-window", "-n", bid, "-c", bm.SESSION_CWD, "claude", "attach", sid],
+                           capture_output=True, text=True, check=True)
+        except (subprocess.CalledProcessError, OSError) as e:
+            self.call_from_thread(self.notify, f"tmux new-window failed: {getattr(e, 'stderr', '') or e}", severity="error")
+
+
+def open_window() -> None:
+    """Open a tmux window with claude agents on the left and bd-tui on the right."""
+    if not os.environ.get("TMUX"):
+        sys.exit("bd-tui --window runs inside tmux. Start tmux, or run bd-tui on its own.")
+    env = ["-e", f"BEADS_DIR={os.environ['BEADS_DIR']}"] if os.environ.get("BEADS_DIR") else []
+    window = subprocess.run(["tmux", "new-window", "-P", "-F", "#{window_id}", "-n", "beads", "-c", bm.SESSION_CWD,
+                             "claude", "agents"], capture_output=True, text=True, check=True).stdout.strip()
+    subprocess.run(["tmux", "split-window", "-h", "-t", window, "-l", TMUX_SPLIT, "-c", bm.SESSION_CWD, *env,
+                    os.path.realpath(__file__)], check=True)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--window", action="store_true", help="inside tmux, open claude agents and bd-tui side by side")
+    ap.add_argument("--export", metavar="FILE", help="read a saved `bd export` (JSON lines) instead of running bd")
+    args = ap.parse_args()
+    bm.default_beads_dir()
+    if args.window:
+        open_window()
+        return
+    if args.export:
+        def load() -> list[dict]:
+            with open(args.export) as f:
+                return [json.loads(line) for line in f if line.strip()]
+        BeadBoard(load_rows=load).run()
+    else:
+        BeadBoard().run()
+
+
+if __name__ == "__main__":
+    main()
