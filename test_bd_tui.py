@@ -29,7 +29,7 @@ _loader.exec_module(tui)
 
 SKIPPED = ("## Summary\nOne line.\n\n## If skipped\n- Goal date: slips: ent-aaa.4 waits on the load test\n"
            "- Goal result: changes: the latency covers one export size\n- Worst case: a fast small export reads as\n"
-           "  fast at every size\n\n## Context\nDetail.")
+           "  fast at every size\n- Priority: P0, because the load test waits on it\n\n## Context\nDetail.")
 
 
 def bead(bid: str, **kw) -> dict:
@@ -50,20 +50,20 @@ def blocked_by(of: str) -> dict:
 
 ROWS = [
     bead("ent-aaa", issue_type="epic", title="Alpha epic", labels=["area:alpha"], acceptance_criteria="the goal holds"),
-    bead("ent-aaa.1", status="in_progress", labels=["area:alpha", "path:on"], dependencies=[child("ent-aaa")]),
-    bead("ent-aaa.2", labels=["area:alpha", "needs:ben", "path:off"], dependencies=[child("ent-aaa")]),
+    bead("ent-aaa.1", status="in_progress", priority=0, labels=["area:alpha"], dependencies=[child("ent-aaa")]),
+    bead("ent-aaa.2", priority=1, labels=["area:alpha", "needs:ben"], dependencies=[child("ent-aaa")]),
     bead("ent-aaa.3", status="in_progress", labels=["area:alpha"], dependencies=[child("ent-aaa")],
          notes="2026-11-03: Needs from Ben:\n- pick an export size"),
-    bead("ent-aaa.4", labels=["area:alpha", "path:on"], dependencies=[child("ent-aaa")]),
+    bead("ent-aaa.4", priority=0, labels=["area:alpha"], dependencies=[child("ent-aaa")]),
     bead("ent-aaa.5", status="closed", closed_at="2026-11-04T00:00:00Z", labels=["area:alpha"],
          close_reason="Done 3.\nNeeds from Ben:\n- ship A or B", dependencies=[child("ent-aaa")]),
     bead("ent-aaa.6", status="closed", closed_at="2026-11-04T00:00:00Z", labels=["area:alpha", "reviewed"],
          close_reason="Done 4.", dependencies=[child("ent-aaa")]),
     bead("ent-aaa.7", labels=["area:alpha", "kind:decision"], dependencies=[child("ent-aaa")]),
     bead("ent-aaa.8", labels=["area:alpha", "kind:decision"], dependencies=[child("ent-aaa"), blocked_by("ent-aaa.4")]),
-    bead("ent-aaa.9", labels=["area:alpha", "needs:ben", "ben:plan", "kind:experiment", "path:on"], description=SKIPPED,
+    bead("ent-aaa.9", priority=0, labels=["area:alpha", "needs:ben", "ben:plan", "kind:experiment"], description=SKIPPED,
          acceptance_criteria="- three export sizes timed\n- [x] p95 per size\n- one size run twice",
-         notes="2026-11-05: Plan written; Ben picks the sizes.\n2026-11-06: If skipped written, path:on.",
+         notes="2026-11-05: Plan written; Ben picks the sizes.\n2026-11-06: If skipped written, P0 (was P2).",
          dependencies=[child("ent-aaa"), blocked_by("ent-aaa.1")]),
     bead("ent-aaa.10", issue_type="epic", title="Nested epic", labels=["area:alpha"], dependencies=[child("ent-aaa")]),
     bead("ent-aaa.10.1", status="in_progress", labels=["area:alpha"], dependencies=[child("ent-aaa.10")]),
@@ -159,14 +159,20 @@ async def check_synthetic() -> None:
         tree.move_cursor(nodes["ent-aaa.9"])
         await pilot.pause()
         body = plain(app.detail)
-        marks = ["ent-aaa.9 · blocked · needs you · P2", "If skipped", " date ", "slips: ent-aaa.4",
-                 " result ", " worst ", "fast small export reads as fast at every size", "ben:plan · kind:experiment · path:on",
+        marks = ["ent-aaa.9 · blocked · needs you · P0", "If skipped", " date ", "slips: ent-aaa.4",
+                 " result ", " worst ", "fast small export reads as fast at every size", " priority ",
+                 "P0, because the load test waits on it", "ben:plan · kind:experiment",
                  "Done when", "☐ three export sizes", "☑ p95 per size", "Thread ent-aaa · blocked by .1 · blocks –",
                  "Latest 2026-11-05", "Plan written"]
         where = [body.find(m) for m in marks]
         check(all(i >= 0 for i in where) and where == sorted(where),
               "the detail runs: why listed, If skipped, labels, Done when, thread, latest note")
         check("If skipped written" not in body, "the Latest line skips the bookkeeping note")
+        b9 = app.beads["ent-aaa.9"]
+        no_why = {**b9, "ifSkipped": {k: v for k, v in b9["ifSkipped"].items() if k != "why"}}
+        check(not bm.priority_flags(b9) and bm.priority_flags({**b9, "priority": 2}) == ["lines say P0"]
+              and bm.priority_flags(no_why) == ["no Priority line"],
+              "a priority that its If skipped lines do not support, or no Priority line, is flagged")
 
         # g swaps the detail for the thread in dependency order.
         await pilot.press("g")
@@ -188,7 +194,7 @@ async def check_synthetic() -> None:
         check({"ent-aaa.4", "ent-aaa.8"} <= set(bead_nodes(app)), "o adds every open bead")
         await pilot.press("o", "p")
         await settle(app, pilot)
-        check(set(bead_nodes(app)) == {"ent-aaa.1", "ent-aaa.9"}, "p keeps only path:on beads")
+        check(set(bead_nodes(app)) == {"ent-aaa.1", "ent-aaa.9"}, "p keeps only P0 beads")
         await pilot.press("p")
         await settle(app, pilot)
 

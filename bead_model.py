@@ -48,7 +48,7 @@ SUMMARY_DETAIL = re.compile(r"`|--[a-z]|" + W + r"[0-9a-f]{7,40}" + E + r"|[A-Za
 # The `bead` skill's if_skipped.py appends this note to every bead it writes, so it says nothing about progress.
 BOOKKEEPING = re.compile(r"^[:\s*]*If skipped written\b")
 IF_SKIPPED = re.compile(r"^## If skipped\n(.*?)(?=^#{1,3} |\Z)", re.M | re.S)
-IF_SKIPPED_LINE = re.compile(r"^- (Goal date|Goal result|Worst case):\s*(.*)$")
+IF_SKIPPED_LINE = re.compile(r"^- (Goal date|Goal result|Worst case|Priority):\s*(.*)$")
 TYPE_KIND = {"bug": "bugfix", "feature": "feature", "decision": "decision", "spike": "analysis", "chore": "ops",
              "gate": "decision"}
 RANK = {"prog": 0, "ready": 1, "blocked": 2, "deferred": 3, "closed": 4}
@@ -344,8 +344,7 @@ def flags_of(b: dict) -> list[str]:
     if is_open and not is_epic:
         if not re.search(r"^## If skipped$", b.get("description") or "", re.M):
             f.append("no ## If skipped")
-        if len([l for l in b["labels"] if l in ("path:on", "path:off")]) != 1:
-            f.append("no path: label")
+        f += priority_flags(b)
     if is_open and is_epic and not b.get("acceptance_criteria"):
         f.append("epic has no goal check")
     if is_open and any(re.fullmatch(r"size-[0-9]", l) for l in b["labels"]):
@@ -360,15 +359,36 @@ def flags_of(b: dict) -> list[str]:
     return f
 
 
+def priority_flags(b: dict) -> list[str]:
+    """An open bead's priority against its If skipped lines: P0 exactly when a goal line changes.
+
+    The goal lines read against the epic's acceptance check, its MVP, so a change on either one
+    means the MVP needs the bead. Without a section, "no ## If skipped" already covers it.
+    """
+    s, p = b.get("ifSkipped"), b.get("priority")
+    if s is None:
+        return []
+    if "why" not in s:
+        return ["no Priority line"]
+    moves = s.get("date", "").startswith("slips:") or s.get("result", "").startswith("changes:")
+    if p not in (0, 1, 2, 3):
+        return [f"priority P{p}"]
+    if moves and p != 0:
+        return ["lines say P0"]
+    if not moves and p == 0:
+        return ["lines say not P0"]
+    return []
+
+
 def if_skipped(desc: str | None) -> dict | None:
-    """The three lines of the "## If skipped" section, keyed date, result and worst; None without one.
+    """The four lines of the "## If skipped" section, keyed date, result, worst and why; None without one.
 
     A line's indented continuation joins it, because the bead skill wraps a long worst case.
     """
     m = IF_SKIPPED.search(desc or "")
     if not m:
         return None
-    keys = {"Goal date": "date", "Goal result": "result", "Worst case": "worst"}
+    keys = {"Goal date": "date", "Goal result": "result", "Worst case": "worst", "Priority": "why"}
     out, last = {}, None
     for line in m.group(1).split("\n"):
         lm = IF_SKIPPED_LINE.match(line)

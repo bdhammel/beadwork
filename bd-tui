@@ -64,7 +64,7 @@ NOTE_LINES, NOTE_CHARS = 10, 700  # the Latest note stops at whichever comes fir
 SESSION_POLL_S = 30
 TMUX_SPLIT = "40%"  # bd-tui's share of the window, so claude agents gets 60%, about 142 of Ben's 238 columns
 BANNED = {"ctrl+h", "ctrl+j", "ctrl+k", "ctrl+l"}
-KEYS = [("j k", "move"), ("h l", "fold"), ("o", "open"), ("c", "closed"), ("v", "unreviewed"), ("p", "path:on"),
+KEYS = [("j k", "move"), ("h l", "fold"), ("o", "open"), ("c", "closed"), ("v", "unreviewed"), ("p", "P0"),
         ("g", "thread order"), ("/", "search"), ("⏎", "nvim"), ("s", "start session"), ("a", "attach"),
         ("r", "reload"), ("q", "quit")]
 
@@ -231,7 +231,7 @@ class BeadBoard(App):
         Binding("o", "toggle('show_open')", show=False),
         Binding("c", "toggle('show_closed')", show=False),
         Binding("v", "toggle('show_unreviewed')", show=False),
-        Binding("p", "toggle('path_only')", show=False),
+        Binding("p", "toggle('p0_only')", show=False),
         Binding("g", "thread", show=False),
         Binding("slash", "search", show=False),
         Binding("escape", "clear_search", show=False),
@@ -247,7 +247,7 @@ class BeadBoard(App):
         self.load_rows, self.load_sessions = load_rows, load_sessions
         self.beads: dict[str, dict] = {}
         self.sessions: dict[str, str] = {}  # bead id -> the liveliest state of its sessions
-        self.show_open = self.show_closed = self.show_unreviewed = self.path_only = False
+        self.show_open = self.show_closed = self.show_unreviewed = self.p0_only = False
         self.thread_view = False
         self.query_text = ""
         self.expanded: set[str] | None = None  # None until the first tree, which opens the first area
@@ -335,7 +335,7 @@ class BeadBoard(App):
             else:
                 ok = (bm.needs_ben_now(b) or (self.show_open and b["status"] != "closed")
                       or (self.show_closed and b["status"] == "closed") or (self.show_unreviewed and b["awaiting"]))
-            if ok and (not self.path_only or "path:on" in b["labels"]):
+            if ok and (not self.p0_only or b.get("priority") == 0):
                 out.append(b["id"])
         return out
 
@@ -397,14 +397,14 @@ class BeadBoard(App):
         t.append("?" if b["needsYou"] else "◇" if b["awaiting"] else " ", style=NEEDS_STYLE if b["needsYou"] else REVIEW_STYLE)
         t.append(" " + short(bid, epic).ljust(6) + " ", style=ID)
         t.append(fit(b.get("title") or "", width))
-        path = "on" if "path:on" in b["labels"] else "off" if "path:off" in b["labels"] else "–"
-        t.append(" " + path, style="" if path == "on" else MUTED)
+        p = b.get("priority")
+        t.append(f" P{p}", style="" if p == 0 else MUTED)
         return t
 
     def rebuild(self) -> None:
         tree = self.query_one(BeadTree)
         keep = tree.cursor_node.data if tree.cursor_node else None
-        # The tree's guides, marks, id and path take about 22 columns of a bead row and 32 of an epic row.
+        # The tree's guides, marks, id and priority take about 22 columns of a bead row and 32 of an epic row.
         pane = tree.size.width or self.size.width
         bead_w, epic_w = max(12, min(100, pane - 22)), max(12, min(90, pane - 32))
         groups = self.groups()
@@ -514,7 +514,7 @@ class BeadBoard(App):
         s = b["ifSkipped"]
         if s:
             lines = grid()
-            for key in ("date", "result", "worst"):
+            for key, name in (("date", "date"), ("result", "result"), ("worst", "worst"), ("why", "priority")):
                 value = s.get(key, "–")
                 head, sep, rest = value.partition(": ")
                 if value == "unchanged":
@@ -523,7 +523,7 @@ class BeadBoard(App):
                     shown = Text.assemble((head + ":", WARM), " " + rest)
                 else:
                     shown = Text(value)
-                lines.add_row(Text(f" {key}", style=MUTED), shown)
+                lines.add_row(Text(f" {name}", style=MUTED), shown)
             parts.append(lines)
         else:
             parts.append(Text(" no ## If skipped section", style=MUTED))
@@ -568,8 +568,7 @@ class BeadBoard(App):
         run += [f"wait:{b['wait']}"] if b["wait"] else []
         run += [f"mode:{b['mode']}"] if b["mode"] else []
         kind = f"kind:{b['kind']['name']}" + ("?" if b["kind"]["inferred"] else "")
-        path = next((l for l in b["labels"] if l in ("path:on", "path:off")), "no path: label")
-        words = [(w, MUTED) for w in run + [kind]] + [(path, "" if path == "path:on" else MUTED)]
+        words = [(w, MUTED) for w in run + [kind]]
         return joined(words + ([("one-shot", "#89b4fa")] if b["oneshot"] else []))
 
     def epic_text(self, epic: str) -> Group:
@@ -616,7 +615,7 @@ class BeadBoard(App):
         view = f"search “{self.query_text}”" if self.query_text else "Now" + "".join(
             f" +{name}" for flag, name in ((self.show_open, "open"), (self.show_closed, "closed"),
                                            (self.show_unreviewed, "unreviewed")) if flag)
-        view += " · path:on only" if self.path_only else ""
+        view += " · P0 only" if self.p0_only else ""
         parts = [("bd-tui", "bold"), (view, ""), (f"{working} working", STATUS_STYLE["prog"]), (f"{you} need you", NEEDS_STYLE)]
         if self.read_at:
             parts.append((f"read {time.strftime('%H:%M', time.localtime(self.read_at))}", MUTED))
@@ -627,7 +626,7 @@ class BeadBoard(App):
     def render_keys(self) -> None:
         """The key list, wrapped to the pane's width, with the views that are on shown in reverse."""
         on = {"open": self.show_open, "closed": self.show_closed, "unreviewed": self.show_unreviewed,
-              "path:on": self.path_only, "thread order": self.thread_view}
+              "P0": self.p0_only, "thread order": self.thread_view}
         width = max(20, (self.size.width or 80) - 2)
         lines, line, used = [], Text(), 0
         for key, what in KEYS:

@@ -70,7 +70,7 @@ with them.
 | `j` `k` | Move up and down the tree |
 | `h` `l` | Fold and unfold an area or epic |
 | `o` `c` `v` | Add every open bead, the closed beads or the unreviewed results to the view |
-| `p` | Show only `path:on` beads |
+| `p` | Show only P0 beads, the ones the epic's MVP needs |
 | `g` | Show the epic's open beads in dependency order in the detail pane |
 | `/` | Search ids and titles, where Enter keeps the search and Esc clears it |
 | Enter | Open the bead's full `bd show` text, read-only, in nvim |
@@ -81,15 +81,15 @@ with them.
 ## What the board reads from a bead
 
 The board reads these conventions. Its detail pane also marks a bead with ⚠ when the bead
-lacks a `## Summary`, a `## If skipped` section, acceptance, or a `ben:`, `kind:` or `path:`
+lacks a `## Summary`, a `## If skipped` section, acceptance, a `Priority:` line, or a `ben:` or `kind:`
 label.
 
 | Convention | What the board does with it |
 |---|---|
 | An `area:<name>` label on the epic | Groups the tree by area |
 | A `needs:ben` label, a `Needs from Ben:` list in the newest dated note, or an open `kind:decision` bead | Marks the bead `?` and lists it |
-| A `## If skipped` section with `Goal date:`, `Goal result:` and `Worst case:` lines | Opens the detail pane |
-| A `path:on` or `path:off` label | Sets what `p` keeps |
+| A `## If skipped` section with `Goal date:`, `Goal result:`, `Worst case:` and `Priority:` lines | Opens the detail pane |
+| A priority from P0 to P3, which the `Priority:` line in `## If skipped` justifies | Sets what `p` keeps, and is flagged when it disagrees with the goal lines on P0 |
 | A `mode:ultrathink` or `mode:ultracode` label | Starts the bead's session with that keyword |
 | Notes that start with a `YYYY-MM-DD:` date | Shows the newest as the Latest note |
 | Acceptance lines, with `[x]` on a finished one | Shows the Done when checklist |
@@ -101,7 +101,7 @@ Run the checks from the repo directory. Expected: `all checks passed` and exit c
 
 ```bash
 cd ~/dev/bd-tui
-./test_bd_tui.py          # 25 checks on a synthetic export
+./test_bd_tui.py          # 26 checks on a synthetic export
 ./test_bd_tui.py --live   # also checks the tree and renders every bead in your own export
 ```
 
