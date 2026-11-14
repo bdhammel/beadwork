@@ -98,7 +98,7 @@ current without asking Ben for every move.
 |---|---|
 | Pass `-p` to every `bd create`, for a bead or an epic | `bd` files an issue without `-p` at P2, which claims a judgment that nobody made |
 | A bead's priority is at least as high as the priority of every bead it blocks | The work that needs the blocked bead needs its blocker too, and a script finds a pair that breaks this |
-| Claude re-judges a bead's priority when it claims the bead and in `/bead-review`, and appends a dated note when the priority moves | The fuller version of an epic changes as the work runs, so a priority set at filing goes stale |
+| Claude re-judges a bead's priority when it claims the bead, when it moves the bead to another epic, and in `/bead-review`, and appends a dated note when the priority moves | A priority set at filing goes stale as the epic changes, and a move changes the acceptance check that the If skipped lines read against |
 | A re-judgment that would move a bead into or out of P0 goes to Ben as a `Needs from Ben:` item, and Claude makes every other move itself | A P0 move changes what the MVP needs, which is scope |
 | A bead with no epic is judged against the bead or deliverable it names, and is P3 when it names none | Without an MVP, no work can need it |
 
