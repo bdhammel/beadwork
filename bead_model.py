@@ -47,6 +47,7 @@ TYPE_KIND = {"bug": "bugfix", "feature": "feature", "decision": "decision", "spi
 RANK = {"prog": 0, "ready": 1, "blocked": 2, "deferred": 3, "closed": 4}
 SETTINGS = os.path.expanduser("~/.claude/settings.json")
 SESSION_CWD = os.path.expanduser("~/dev")
+EXPORT_TIMEOUT_S = 30  # a hung `bd export` fails the board's reread instead of holding its worker forever
 # A bead's mode: label names the keyword its session starts with (beads.md, "Run labels").
 SESSION_KEYWORDS = ("ultrathink", "ultracode")
 PROMPT_MAX = 20000
@@ -77,7 +78,7 @@ def default_beads_dir() -> None:
 
 
 def export_beads() -> list[dict]:
-    out = subprocess.run(["bd", "export"], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(["bd", "export"], capture_output=True, text=True, timeout=EXPORT_TIMEOUT_S, check=True).stdout
     return [json.loads(line) for line in out.splitlines() if line.strip()]
 
 

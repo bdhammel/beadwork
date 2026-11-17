@@ -61,7 +61,8 @@ the board that reads it is one commit. It is a working personal tool.
 |---|---|
 | Open the board in this terminal | `bd-tui` |
 | Open a tmux window with `claude agents` on the left and the board on the right | `bd-tui --window` |
-| Read a saved `bd export` instead of running `bd`, which `r` rereads | `bd-tui --export FILE` |
+| Read a saved `bd export` instead of running `bd` | `bd-tui --export FILE` |
+| Reread the beads every 120 s instead of every 60 s, or only on `r` with `0` | `bd-tui --refresh 120` |
 | Write a bead's `## If skipped` section and priority, or print it without writing with `--dry-run` | `~/dev/beadwork/if_skipped.py <id> --today <YYYY-MM-DD> --priority <0-3> --why "<reason>"` |
 
 ## Keys
@@ -71,7 +72,7 @@ with them.
 
 | Key | What it does |
 |---|---|
-| `j` `k` | Move up and down the tree |
+| `j` `k`, Ctrl-n Ctrl-p | Move down and up the tree |
 | `h` `l` | Fold and unfold an area or epic |
 | `o` `c` `v` | Add every open bead, the closed beads or the unreviewed results to the view |
 | `p` | Show only P0 beads, the ones the epic's MVP needs |
@@ -81,10 +82,15 @@ with them.
 | `m` | Mark a closed bead's result reviewed, and press it again to undo |
 | `s` | Start a background Claude session on the bead, after you type what it should do |
 | `a` | Attach to the bead's newest session in a new tmux window |
-| `r` `q` | Reload, and quit |
+| `r` `q` | Reread the beads now, and quit |
 
 Only you press `m`, because the rules reserve the `reviewed` label for the person who reviews
 the result.
+
+The board rereads the beads every 60 s, so a bead that another session claims or closes moves
+without a key press, and the title bar shows the time of the last read. A reread that finds a
+change rebuilds the tree but keeps your cursor, your folds and your place in the detail pane.
+A reread that finds no change only updates the time.
 
 ## What the board reads from a bead
 
@@ -111,7 +117,7 @@ Run the checks from the repo directory. Expected: `all checks passed` and exit c
 
 ```bash
 cd ~/dev/beadwork
-./test_bd_tui.py          # 30 checks on a synthetic export
+./test_bd_tui.py          # 36 checks on a synthetic export
 ./test_bd_tui.py --live   # also checks the tree and renders every bead in your own export
 ```
 

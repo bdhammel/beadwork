@@ -18,7 +18,10 @@ import importlib.util
 import io
 import os
 import re
+import subprocess
 import sys
+import threading
+import time
 
 from rich.console import Console
 
@@ -103,6 +106,14 @@ async def settle(app, pilot) -> None:
     await pilot.pause()
 
 
+async def until(pilot, cond, limit_s: float = 2.0) -> bool:
+    """Wait for a condition that a timer makes true, so a check never depends on how ticks line up."""
+    end = time.monotonic() + limit_s
+    while not cond() and time.monotonic() < end:
+        await pilot.pause(0.05)
+    return cond()
+
+
 def banned_bindings(app) -> set:
     """Every key that a binding on the focused chain or any mounted widget answers, intersected with the ban."""
     keys = set(app.active_bindings)
@@ -176,6 +187,13 @@ async def check_synthetic() -> None:
         check(not bm.priority_flags(b9) and bm.priority_flags({**b9, "priority": 2}) == ["lines say P0"]
               and bm.priority_flags(no_why) == ["no Priority line"],
               "a priority that its If skipped lines do not support, or no Priority line, is flagged")
+
+        # Ctrl-n and Ctrl-p move the cursor like j and k.
+        line = tree.cursor_line
+        await pilot.press("ctrl+n")
+        down = tree.cursor_line
+        await pilot.press("ctrl+p")
+        check(down == line + 1 and tree.cursor_line == line, "Ctrl-n moves the cursor down a line and Ctrl-p moves it back")
 
         # g swaps the detail for the thread in dependency order.
         await pilot.press("g")
@@ -266,8 +284,74 @@ async def check_synthetic() -> None:
               "m on a reviewed result removes the label again")
 
 
+async def check_refresh() -> None:
+    """The timer rereads the beads: a change rebuilds the tree in place, and no change rebuilds nothing."""
+    rows, loads, fail, gate = copy.deepcopy(ROWS), [], [], threading.Event()
+    gate.set()
+
+    def load() -> list[dict]:
+        loads.append(1)
+        gate.wait(5)
+        if fail:
+            fail.pop()
+            raise subprocess.CalledProcessError(1, ["bd", "export"], stderr="database is locked")
+        return copy.deepcopy(rows)
+
+    def rename(bid: str) -> str:
+        title = f"{bid} renamed by another session"
+        next(r for r in rows if r["id"] == bid)["title"] = title
+        return title
+
+    app = tui.BeadBoard(load_rows=load, load_sessions=None, refresh_s=0.1)
+    async with app.run_test(size=(120, 18)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("o")
+        await settle(app, pilot)
+        tree, detail = app.query_one(tui.BeadTree), app.query_one("#detail")
+        # The last bead under the open area, so the tree has scrolled to show it.
+        last = [n for n in app.walk(tree.root) if n.data and n.data[0] == "bead" and all(p.is_expanded for p in app.ancestors(n))][-1]
+        tree.move_cursor(last)
+        await pilot.pause()
+        detail.scroll_to(y=3, animate=False)
+        await pilot.pause()
+        before = (tree.cursor_node.data, tree.scroll_y, detail.scroll_y)
+        title = rename("ent-aaa.2")
+        changed = await until(pilot, lambda: title in bead_nodes(app)["ent-aaa.2"].label.plain)
+        await pilot.pause()
+        after = (tree.cursor_node.data, tree.scroll_y, detail.scroll_y)
+        check(changed and before[1] > 0 and before[2] > 0 and after == before,
+              f"a reread that changes another row rebuilds the tree, keeping the cursor and both scroll positions: {before} -> {after}")
+
+        epic = next(n for n in app.walk(tree.root) if n.data and n.data[:2] == ("epic", "ent-aaa"))
+        tree.move_cursor(epic)
+        await pilot.pause()
+        title = rename("ent-aaa.3")
+        changed = await until(pilot, lambda: title in bead_nodes(app)["ent-aaa.3"].label.plain)
+        await pilot.pause()
+        check(changed and tree.cursor_node.data[:2] == ("epic", "ent-aaa"), "a rebuild keeps the cursor on an epic row")
+
+        root, read, n = tree.root, app.read_at, len(loads)
+        quiet = await until(pilot, lambda: len(loads) >= n + 2 and app.read_at > read)
+        check(quiet and tree.root is root, "a reread that finds no change moves the read time and rebuilds nothing")
+
+        fail.append(1)
+        failed = await until(pilot, lambda: "database is locked" in app.error)
+        cleared = await until(pilot, lambda: not app.error)
+        check(failed and cleared and tree.root is root, "a failed reread shows its error, and the next good one clears it")
+
+        gate.clear()
+        n = len(loads)
+        await until(pilot, lambda: len(loads) == n + 1)
+        await pilot.pause(0.4)  # about four ticks while the export hangs
+        started = len(loads) - n
+        gate.set()
+        await settle(app, pilot)
+        check(started == 1, f"ticks while an export hangs start no second export ({started} started)")
+
+
 async def main() -> int:
     await check_synthetic()
+    await check_refresh()
     if "--live" in sys.argv:
         bm.default_beads_dir()
         await check_now_tree(bm.export_beads(), [], None, "live export")
