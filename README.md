@@ -74,15 +74,24 @@ with them.
 |---|---|
 | `j` `k`, Ctrl-n Ctrl-p | Move down and up the tree |
 | `h` `l` | Fold and unfold an area or epic |
-| `o` `c` `v` | Add every open bead, the closed beads or the unreviewed results to the view |
-| `p` | Show only P0 beads, the ones the epic's MVP needs |
+| `o` `d` `c` | Show the open, the deferred or the closed beads, where the board opens on the open beads |
+| `n` | Narrow the list to beads in progress or needing you, which on the closed list are the results that still ask you a question |
+| `v` | Narrow the closed list to the results you have not marked reviewed |
+| `p` | Narrow the list to P0 beads, the ones the epic's MVP needs |
+| `/` | Narrow the list to beads whose id or title matches, where Enter keeps the search and Esc clears it |
 | `g` | Show the epic's open beads in dependency order in the detail pane |
-| `/` | Search ids and titles, where Enter keeps the search and Esc clears it |
 | Enter | Open the bead's full `bd show` text, read-only, in nvim |
 | `m` | Mark a closed bead's result reviewed, and press it again to undo |
 | `s` | Start a background Claude session on the bead, after you type what it should do |
 | `a` | Attach to the bead's newest session in a new tmux window |
 | `r` `q` | Reread the beads now, and quit |
+
+The keys `n`, `v`, `p` and `/` only ever narrow the list, and pressing one again removes its
+filter. The title shows each step with the number of beads left, such as
+`Open 127 › now 42 › P0 18`, so you can read the list as a funnel. The key strip shows how many
+beads the tree would list after you press each list or filter key, and it highlights the keys
+that are on. The title's need-you count covers every list, so it also counts a closed result
+that still asks you a question.
 
 Only you press `m`, because the rules reserve the `reviewed` label for the person who reviews
 the result.
@@ -117,7 +126,7 @@ Run the checks from the repo directory. Expected: `all checks passed` and exit c
 
 ```bash
 cd ~/dev/beadwork
-./test_bd_tui.py          # 36 checks on a synthetic export
+./test_bd_tui.py          # 40 checks on a synthetic export
 ./test_bd_tui.py --live   # also checks the tree and renders every bead in your own export
 ```
 

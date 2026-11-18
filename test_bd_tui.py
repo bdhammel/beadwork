@@ -6,7 +6,7 @@
 """Check bd-tui headless on a synthetic bead export, and optionally on the live one.
 
   ./test_bd_tui.py          the synthetic export below; exits 1 on any failed check
-  ./test_bd_tui.py --live   also checks the Now tree on today's `bd export` (needs BEADS_DIR)
+  ./test_bd_tui.py --live   also checks the open, now and closed lists on today's `bd export` (needs BEADS_DIR)
 
 Runs from any directory with no venv, because uv installs Textual from the script header.
 The fixture is synthetic, so that the repo holds no real beads.
@@ -79,7 +79,10 @@ ROWS = [
     bead("ent-bbb.1", status="in_progress", dependencies=[child("ent-bbb")]),
     bead("ent-ccc", status="in_progress", labels=["area:alpha"]),
 ]
+OPEN = {"ent-aaa.1", "ent-aaa.2", "ent-aaa.3", "ent-aaa.4", "ent-aaa.7", "ent-aaa.8", "ent-aaa.9", "ent-aaa.10.1",
+        "ent-bbb.1", "ent-ccc"}
 NOW = {"ent-aaa.1", "ent-aaa.2", "ent-aaa.3", "ent-aaa.7", "ent-aaa.9", "ent-aaa.10.1", "ent-bbb.1", "ent-ccc"}
+NOW_CLOSED = {"ent-aaa.5"}  # the unreviewed result whose close reason asks Ben to ship A or B
 SESSIONS = [{"name": "ent-aaa.1 build it", "state": "working"}, {"name": "ent-aaa.10 other", "state": "working"}]
 failures: list[str] = []
 
@@ -126,22 +129,34 @@ def banned_bindings(app) -> set:
     return keys & tui.BANNED
 
 
-async def check_now_tree(rows, sessions, expected: set | None, label: str) -> None:
+async def check_lists(rows, sessions, expected: tuple[set, set] | None, label: str) -> None:
+    """The board opens on every open bead, n narrows it to the now rule, and n on the closed list keeps open questions."""
     app = tui.BeadBoard(load_rows=lambda: rows, load_sessions=lambda: sessions)
     async with app.run_test(size=(200, 60)) as pilot:
         await settle(app, pilot)
         beads = app.beads
-        rule = {b["id"] for b in beads.values() if bm.needs_ben_now(b)}
+        beads_only = {i for i, b in beads.items() if b.get("issue_type") != "epic"}
+        opened = {i for i in beads_only if beads[i]["status"] not in ("closed", "deferred")}
         nodes = bead_nodes(app)
-        if expected is not None:
-            check(rule == expected, f"{label}: the shared rule picks the hand-listed Now beads")
-        check(set(nodes) == rule, f"{label}: the Now tree lists exactly the rule's {len(rule)} beads (tree has {len(nodes)})")
-        check(all(beads[i]["status"] != "closed" for i in nodes), f"{label}: no closed bead in the Now tree")
-        check(all(beads[i].get("issue_type") != "epic" for i in nodes), f"{label}: no epic as a bead row")
+        check(set(nodes) == opened, f"{label}: the board opens on all {len(opened)} open beads, no deferred, closed or epic row")
         grouped = all(n.parent.data[1] == bm.epic_of(beads, i)
                       and n.parent.parent.data[1] == (bm.area_of(beads, i) or tui.NO_AREA) for i, n in nodes.items())
         check(grouped, f"{label}: every bead sits under its top epic, under that epic's area")
+        rule = {i for i in opened if bm.needs_ben_now(beads[i])}
+        asks = {i for i in beads_only if beads[i]["status"] == "closed" and beads[i]["awaiting"] and beads[i]["needsYou"]}
+        if expected is not None:
+            check((rule, asks) == expected, f"{label}: the now rule picks the hand-listed open beads and unreviewed questions")
+        await pilot.press("n")
+        await settle(app, pilot)
+        check(set(bead_nodes(app)) == rule, f"{label}: n narrows the open list to the {len(rule)} beads in progress or needing Ben")
+        await pilot.press("c")
+        await settle(app, pilot)
+        check(set(bead_nodes(app)) == asks,
+              f"{label}: on the closed list, n keeps the {len(asks)} unreviewed results that ask Ben a question")
         if expected is None:
+            lists = [set(app.funnel(s, {})[-1][1]) for s in tui.SCOPES]
+            check(sum(map(len, lists)) == len(beads_only) and set().union(*lists) == beads_only,
+                  f"{label}: the open, deferred and closed lists hold each of the {len(beads_only)} beads exactly once")
             # Every bead's detail, every epic's and every thread render on the real export, closed ones too.
             broken = []
             for bid, b in beads.items():
@@ -151,16 +166,12 @@ async def check_now_tree(rows, sessions, expected: set | None, label: str) -> No
                 except Exception as e:  # noqa: BLE001 - report every bead that fails, not the first
                     broken.append(f"{bid}: {type(e).__name__} {e}")
             check(not broken, f"{label}: the detail and thread of all {len(beads)} beads render" + "".join(f"\n     {x}" for x in broken[:5]))
-            await pilot.press("o", "c", "v")
-            await settle(app, pilot)
-            check(len(bead_nodes(app)) == sum(1 for b in beads.values() if b.get("issue_type") != "epic"),
-                  f"{label}: o, c and v together list every bead that is not an epic")
-            print(f"     {len(rule)} beads: {sum(beads[i]['status'] == 'in_progress' for i in rule)} in progress, "
-                  f"{sum(beads[i]['needsYou'] for i in rule)} need Ben")
+            print(f"     open {len(opened)} › now {len(rule)}: {sum(beads[i]['status'] == 'in_progress' for i in rule)} in progress, "
+                  f"{sum(bm.asks_ben_now(beads[i]) for i in rule)} need Ben · closed › now {len(asks)}")
 
 
 async def check_synthetic() -> None:
-    await check_now_tree(ROWS, SESSIONS, NOW, "synthetic")
+    await check_lists(ROWS, SESSIONS, (NOW, NOW_CLOSED), "synthetic")
     app = tui.BeadBoard(load_rows=lambda: ROWS, load_sessions=lambda: SESSIONS)
     async with app.run_test(size=(200, 60)) as pilot:
         await settle(app, pilot)
@@ -204,33 +215,43 @@ async def check_synthetic() -> None:
               "g shows the thread with each bead after the beads that block it")
         await pilot.press("g")
 
-        # o, c, v and p change what the tree lists.
+        # o, d and c pick a list; n, v and p only narrow it; the title counts every step.
+        title = lambda: app.title_text.plain
+        check("Open 10 · " in title() and "n now 8" in app.keys_text.plain and "p P0 3" in app.keys_text.plain,
+              f"the title counts the open list and the strip counts what n and p would leave: {title()!r}")
+        await pilot.press("n", "p")
+        await settle(app, pilot)
+        check(set(bead_nodes(app)) == {"ent-aaa.1", "ent-aaa.9"} and "Open 10 › now 8 › P0 2 · " in title(),
+              f"n then p narrow the open list, and the title counts each step: {title()!r}")
         await pilot.press("c")
         await settle(app, pilot)
-        check({"ent-aaa.5", "ent-aaa.6"} <= set(bead_nodes(app)), "c adds closed beads")
-        await pilot.press("c", "v")
+        check(not bead_nodes(app) and "o shows 2 open" in plain(app.detail),
+              "c keeps n and p, and an empty list names the list where they find beads")
+        await pilot.press("n", "p", "v")
         await settle(app, pilot)
-        shown = set(bead_nodes(app))
-        check("ent-aaa.5" in shown and "ent-aaa.6" not in shown, "v adds unreviewed results only")
-        await pilot.press("v", "o")
+        check(set(bead_nodes(app)) == {"ent-aaa.5"} and "Closed 2 › unreviewed 1 · " in title(),
+              "v narrows the closed list to the result not yet reviewed")
+        await pilot.press("d")
         await settle(app, pilot)
-        check({"ent-aaa.4", "ent-aaa.8"} <= set(bead_nodes(app)), "o adds every open bead")
-        await pilot.press("o", "p")
+        check(set(bead_nodes(app)) == {"ent-aaa.11"} and not app.filters_on["unreviewed"] and "v unreviewed" not in app.keys_text.plain,
+              "d lists the deferred bead, and leaving the closed list drops v from the filters and the strip")
+        await pilot.press("v")
         await settle(app, pilot)
-        check(set(bead_nodes(app)) == {"ent-aaa.1", "ent-aaa.9"}, "p keeps only P0 beads")
-        await pilot.press("p")
+        check(set(bead_nodes(app)) == {"ent-aaa.11"}, "v outside the closed list changes nothing")
+        await pilot.press("o")
         await settle(app, pilot)
+        check(set(bead_nodes(app)) == OPEN, "o returns to every open bead")
 
         # / searches, and letters typed into the box never reach the tree's keys.
         check(not banned_bindings(app), "no binding uses Ctrl-h/j/k/l with the tree focused")
         await pilot.press("slash", *"bbb")
         await settle(app, pilot)
-        check(set(bead_nodes(app)) == {"ent-bbb.1"}, "/ narrows the tree to matching beads")
+        check(set(bead_nodes(app)) == {"ent-bbb.1"} and "Open 10 › “bbb” 1" in title(), "/ narrows the list to matching beads")
         check(app.query_one("#search").value == "bbb", "letters typed in the search box stay in the box")
         check(not banned_bindings(app), "no binding uses Ctrl-h/j/k/l with the search box focused")
         await pilot.press("escape")
         await settle(app, pilot)
-        check(set(bead_nodes(app)) == NOW, "Esc clears the search")
+        check(set(bead_nodes(app)) == OPEN, "Esc clears the search")
 
         # s asks for one line; Esc cancels without starting anything.
         tree.move_cursor(bead_nodes(app)["ent-aaa.1"])
@@ -279,6 +300,13 @@ async def check_synthetic() -> None:
         await settle(app, pilot)
         check(calls == [("ent-aaa.5", True)] and not app.beads["ent-aaa.5"]["awaiting"],
               "m on a result to review adds the reviewed label, and the reload shows it reviewed")
+        await pilot.press("n")
+        await settle(app, pilot)
+        # Before the review .2, .5, .7 and .9 need Ben; after it, the three open ones.
+        check("ent-aaa.5" not in bead_nodes(app) and " 3 need you" in app.title_text.plain,
+              f"a reviewed result leaves n and the need-you count, because review answers its question: {app.title_text.plain!r}")
+        await pilot.press("n")
+        await settle(app, pilot)
         tree.move_cursor(bead_nodes(app)["ent-aaa.5"])
         await pilot.press("m")
         await settle(app, pilot)
@@ -306,8 +334,6 @@ async def check_refresh() -> None:
 
     app = tui.BeadBoard(load_rows=load, load_sessions=None, refresh_s=0.1)
     async with app.run_test(size=(120, 18)) as pilot:
-        await settle(app, pilot)
-        await pilot.press("o")
         await settle(app, pilot)
         tree, detail = app.query_one(tui.BeadTree), app.query_one("#detail")
         # The last bead under the open area, so the tree has scrolled to show it.
@@ -356,7 +382,7 @@ async def main() -> int:
     await check_refresh()
     if "--live" in sys.argv:
         bm.default_beads_dir()
-        await check_now_tree(bm.export_beads(), [], None, "live export")
+        await check_lists(bm.export_beads(), [], None, "live export")
     print(f"\n{len(failures)} failed" if failures else "\nall checks passed")
     return 1 if failures else 0
 

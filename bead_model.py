@@ -482,10 +482,18 @@ def area_of(beads: dict, bead_id: str) -> str:
     return ""
 
 
+def asks_ben_now(b: dict) -> bool:
+    """A bead with a question Ben has not answered yet: needsYou on a bead that is not an epic.
+
+    A closed bead asks only while its result awaits review, because marking the result reviewed
+    answers the Needs from Ben list in its close reason.
+    """
+    return b["needsYou"] and b.get("issue_type") != "epic" and (b["status"] != "closed" or b["awaiting"])
+
+
 def needs_ben_now(b: dict) -> bool:
-    """The terminal board's Now rule: an open bead that is not an epic, in progress or needing Ben."""
-    return (b["status"] != "closed" and b.get("issue_type") != "epic"
-            and (b["status"] == "in_progress" or b["needsYou"]))
+    """The terminal board's now filter: a bead that is not an epic, and is in progress or asks Ben a question."""
+    return b.get("issue_type") != "epic" and (b["status"] == "in_progress" or asks_ben_now(b))
 
 
 def id_key(bead_id: str) -> list:

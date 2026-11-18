@@ -5,10 +5,12 @@
 # ///
 """Show what Claude is working on and where Ben is needed, as a bead tree in the terminal.
 
-The board runs in one tmux pane beside `claude agents`. Its tree opens on the Now view: every
-open bead that is in progress or needs Ben, grouped by area and then by epic. The detail pane
-below the tree leads with what the epic's goal loses if the bead is skipped. The fields come
-from bead_model.py, which also holds every bd and claude call the board makes.
+The board runs in one tmux pane beside `claude agents`. Its tree opens on every open bead,
+grouped by area and then by epic, with the busiest area unfolded. o, d and c pick the list of
+open, deferred or closed beads. n, v, p and / each narrow that list, and the title shows every
+step with the number of beads left, such as Open 127 › now 42 › P0 18. The detail pane below
+the tree leads with what the epic's goal loses if the bead is skipped. The fields come from
+bead_model.py, which also holds every bd and claude call the board makes.
 
   bd-tui                 open the board in this terminal
   bd-tui --window        inside tmux: open a window with claude agents on the left, bd-tui on the right
@@ -69,9 +71,19 @@ SESSION_POLL_S = 30
 REFRESH_S = 60  # how often the board rereads the beads; `bd export` takes about 0.7 s for 350 beads
 TMUX_SPLIT = "40%"  # bd-tui's share of the window, so claude agents gets 60%, about 142 of Ben's 238 columns
 BANNED = {"ctrl+h", "ctrl+j", "ctrl+k", "ctrl+l"}
-KEYS = [("j k", "move"), ("h l", "fold"), ("o", "open"), ("c", "closed"), ("v", "unreviewed"), ("p", "P0"),
-        ("g", "thread order"), ("/", "search"), ("⏎", "nvim"), ("m", "mark reviewed"), ("s", "start session"),
-        ("a", "attach"), ("r", "reload"), ("q", "quit")]
+# The lists that o, d and c pick, as list name -> (key, title word, the test a bead passes).
+# Every bead that is not an epic sits in exactly one list.
+SCOPES = {"open": ("o", "Open", lambda b: b["status"] not in ("closed", "deferred")),
+          "deferred": ("d", "Deferred", lambda b: b["status"] == "deferred"),
+          "closed": ("c", "Closed", lambda b: b["status"] == "closed")}
+# The filters that narrow a list, as (name, key, the test a bead passes), in the order the title's steps apply them.
+# unreviewed applies only to the closed list, because only a closed bead has a result to review.
+FILTERS = [("now", "n", bm.needs_ben_now), ("unreviewed", "v", lambda b: b["awaiting"]),
+           ("P0", "p", lambda b: b.get("priority") == 0)]
+# The other keys, in short words so that they fit one line of Ben's 95-column pane. The README spells each key out,
+# and j and k are left out because the arrow keys move the cursor too.
+KEYS = [("h l", "fold"), ("g", "thread"), ("⏎", "nvim"), ("m", "reviewed"), ("s", "session"), ("a", "attach"),
+        ("r", "reload"), ("q", "quit")]
 
 
 def short(bead_id: str, epic: str | None) -> str:
@@ -129,6 +141,25 @@ def markdown_lite(text: str) -> Text:
     if more:
         out.append(f"{more} more lines; Enter opens the whole bead\n", style=MUTED)
     return out
+
+
+def wrap_keys(groups: list[list[tuple[str, str, bool]]], width: int) -> list[Text]:
+    """(key, words, on) triples as lines no wider than width, with · between keys, │ between groups and on in reverse."""
+    lines, line, used = [], Text(), 0
+    for g, group in enumerate(groups):
+        for k, (key, words, on) in enumerate(group):
+            sep = " │ " if g and not k else " · "
+            size = len(key) + 1 + len(words) + (len(sep) if used else 0)
+            if used and used + size > width:
+                lines.append(line)
+                line, used, size = Text(), 0, size - len(sep)
+            if used:
+                line.append(sep, style=MUTED)
+            line.append(key, style="bold " + ID)
+            line.append(" " + words, style="reverse" if on else MUTED)
+            used += size
+    lines.append(line)
+    return lines
 
 
 def grid() -> Table:
@@ -233,10 +264,12 @@ class BeadBoard(App):
     #keys { height: 2; background: $boost; padding: 0 1; }
     """
     BINDINGS = [
-        Binding("o", "toggle('show_open')", show=False),
-        Binding("c", "toggle('show_closed')", show=False),
-        Binding("v", "toggle('show_unreviewed')", show=False),
-        Binding("p", "toggle('p0_only')", show=False),
+        Binding("o", "scope('open')", show=False),
+        Binding("d", "scope('deferred')", show=False),
+        Binding("c", "scope('closed')", show=False),
+        Binding("n", "narrow('now')", show=False),
+        Binding("v", "narrow('unreviewed')", show=False),
+        Binding("p", "narrow('P0')", show=False),
         Binding("g", "thread", show=False),
         Binding("slash", "search", show=False),
         Binding("escape", "clear_search", show=False),
@@ -257,10 +290,14 @@ class BeadBoard(App):
         self.detail_for: tuple | None = None  # what the detail pane shows, so a rebuild keeps its scroll
         self.beads: dict[str, dict] = {}
         self.sessions: dict[str, str] = {}  # bead id -> the liveliest state of its sessions
-        self.show_open = self.show_closed = self.show_unreviewed = self.p0_only = False
+        self.scope_name = "open"  # the list the tree shows: a key of SCOPES
+        self.filters_on: dict[str, bool] = {name: False for name, _, _ in FILTERS}
         self.thread_view = False
         self.query_text = ""
         self.expanded: set[str] | None = None  # None until the first tree, which opens the first area
+        self.open_busiest = False  # set by o, d and c, so a new list whose areas are all folded opens one
+        self.title_text = Text("")  # the title and the key strip, kept for the headless test
+        self.keys_text = Text("")
         self.read_at = 0.0
         self.error = ""
         self.detail: RenderableType = Text("")  # what the detail pane shows, kept for the headless test
@@ -286,9 +323,10 @@ class BeadBoard(App):
             self.set_interval(SESSION_POLL_S, self.refresh_sessions)
 
     def on_resize(self) -> None:
-        self.render_keys()
         if self.beads:
             self.rebuild()
+        else:
+            self.render_keys()
 
     # ---------- data ----------
 
@@ -345,21 +383,29 @@ class BeadBoard(App):
 
     # ---------- tree ----------
 
-    def shown(self) -> list[str]:
-        """The beads the tree lists: the Now rule plus the o, c and v views, or the search matches."""
+    def funnel(self, scope: str | None = None, filters: dict[str, bool] | None = None) -> list[tuple[str, list[str]]]:
+        """The tree's list as steps: the scope's beads, then each filter that is on, then the search.
+
+        Each step is (name, the bead ids left after it), so the title can show the count at every step.
+        The arguments stand in for the current scope or filters, so the key strip can count what a key would leave.
+        """
+        scope = scope or self.scope_name
+        on = self.filters_on if filters is None else filters
+        ids = [i for i, b in self.beads.items() if b.get("issue_type") != "epic" and SCOPES[scope][2](b)]
+        steps = [(SCOPES[scope][1], ids)]
+        for name, _, keep in FILTERS:
+            if on.get(name) and (name != "unreviewed" or scope == "closed"):
+                ids = [i for i in ids if keep(self.beads[i])]
+                steps.append((name, ids))
         q = self.query_text.lower()
-        out = []
-        for b in self.beads.values():
-            if b.get("issue_type") == "epic":
-                continue
-            if q:
-                ok = q in b["id"].lower() or q in (b.get("title") or "").lower()
-            else:
-                ok = (bm.needs_ben_now(b) or (self.show_open and b["status"] != "closed")
-                      or (self.show_closed and b["status"] == "closed") or (self.show_unreviewed and b["awaiting"]))
-            if ok and (not self.p0_only or b.get("priority") == 0):
-                out.append(b["id"])
-        return out
+        if q:
+            ids = [i for i in ids if q in i.lower() or q in (self.beads[i].get("title") or "").lower()]
+            steps.append((f"“{self.query_text}”", ids))
+        return steps
+
+    def shown(self) -> list[str]:
+        """The beads the tree lists: what is left after the funnel's last step."""
+        return self.funnel()[-1][1]
 
     def groups(self) -> list[tuple[str, list[tuple[str | None, list[str]]]]]:
         """The shown beads as [(area, [(epic id or None, [bead ids])])], busiest area and epic first."""
@@ -379,12 +425,12 @@ class BeadBoard(App):
         return self.beads[bid]["status"] == "in_progress"
 
     def needs_you(self, bid: str) -> bool:
-        return self.beads[bid]["needsYou"]
+        return bm.asks_ben_now(self.beads[bid])
 
     def counts(self, ids: list[str]) -> Text:
         """How many listed beads are in progress and need Ben, with the marks the bead rows use."""
         w = sum(1 for i in ids if self.is_working(i))
-        y = sum(1 for i in ids if self.needs_you(i) and self.beads[i]["status"] != "closed")
+        y = sum(1 for i in ids if self.needs_you(i))
         out = Text()
         if w:
             out.append(f"  ◐{w}", style=STATUS_STYLE["prog"])
@@ -416,7 +462,8 @@ class BeadBoard(App):
         t = Text()
         t.append("●" if state else " ", style=SESSION_STYLE.get(state or "", MUTED))
         t.append(STATUS_MARK[b["bucket"]], style=STATUS_STYLE[b["bucket"]])
-        t.append("?" if b["needsYou"] else "◇" if b["awaiting"] else " ", style=NEEDS_STYLE if b["needsYou"] else REVIEW_STYLE)
+        asks = bm.asks_ben_now(b)
+        t.append("?" if asks else "◇" if b["awaiting"] else " ", style=NEEDS_STYLE if asks else REVIEW_STYLE)
         t.append(" " + short(bid, epic).ljust(6) + " ", style=ID)
         t.append(fit(b.get("title") or "", width))
         p = b.get("priority")
@@ -430,9 +477,11 @@ class BeadBoard(App):
         pane = tree.size.width or self.size.width
         bead_w, epic_w = max(12, min(100, pane - 22)), max(12, min(90, pane - 32))
         groups = self.groups()
-        if self.expanded is None and groups:  # the first tree opens the busiest area and its epics
+        # The first tree, and a list from o, d or c whose areas are all folded, open the busiest area and its epics.
+        if groups and (self.expanded is None or (self.open_busiest and not any(f"a:{a}" in self.expanded for a, _ in groups))):
             area = groups[0][0]
-            self.expanded = {f"a:{area}"} | {f"e:{area}/{e}" for e, _ in groups[0][1]}
+            self.expanded = (self.expanded or set()) | {f"a:{area}"} | {f"e:{area}/{e}" for e, _ in groups[0][1]}
+        self.open_busiest = False
         searching = bool(self.query_text)
         self.rebuilding = True
         tree.clear()
@@ -454,6 +503,7 @@ class BeadBoard(App):
                 target = an
         self.rebuilding = False
         self.render_title()
+        self.render_keys()
         self.call_after_refresh(self.restore_cursor, target, keep)
 
     def restore_cursor(self, target: TreeNode | None, keep) -> None:
@@ -503,7 +553,7 @@ class BeadBoard(App):
     def show_detail(self) -> None:
         data = self.selected()
         if not data:
-            self.detail = Text("Nothing to show. o adds every open bead, c closed beads, v unreviewed results.", style=MUTED)
+            self.detail = self.empty_text()
         elif self.thread_view and data[0] != "area":
             self.detail = self.thread_text(data[1] if data[0] == "epic" else bm.epic_of(self.beads, data[1]))
         elif data[0] == "bead":
@@ -517,6 +567,15 @@ class BeadBoard(App):
         if (data, self.thread_view) != self.detail_for:
             self.detail_for = (data, self.thread_view)
             self.query_one("#detail").scroll_home(animate=False)
+
+    def empty_text(self) -> Text:
+        """What the detail pane says when the list is empty: which other lists the same filters find beads in."""
+        elsewhere = [f"{SCOPES[s][0]} shows {n} {s}" for s in SCOPES if s != self.scope_name
+                     for n in [len(self.funnel(s)[-1][1])] if n]
+        if elsewhere:
+            return Text(f"Nothing in this list. {', '.join(elsewhere)}.", style=MUTED)
+        narrowed = any(self.filters_on.values()) or self.query_text
+        return Text("Nothing in this list." + (" A highlighted key removes its filter." if narrowed else ""), style=MUTED)
 
     def status_line(self, bid: str, words: list[tuple[str, str]]) -> Text:
         return joined([(bid, ID), *words, (f"P{self.beads[bid].get('priority', '')}", MUTED)])
@@ -609,7 +668,7 @@ class BeadBoard(App):
     def epic_text(self, epic: str) -> Group:
         e, kids = self.beads[epic], bm.descendants(self.beads, epic)
         n = {k: sum(1 for i in kids if self.beads[i]["bucket"] == k) for k in bm.RANK}
-        you = sum(1 for i in kids if self.beads[i]["needsYou"] and self.beads[i]["status"] != "closed")
+        you = sum(1 for i in kids if self.needs_you(i))
         parts: list[RenderableType] = [
             self.status_line(epic, [("epic", MUTED), (STATUS_WORD[e["bucket"]], STATUS_STYLE[e["bucket"]])]),
             Text(e.get("title") or "", style="bold"),
@@ -644,46 +703,61 @@ class BeadBoard(App):
     # ---------- chrome ----------
 
     def render_title(self) -> None:
-        opened = [b for b in self.beads.values() if b["status"] != "closed" and b.get("issue_type") != "epic"]
-        working = sum(1 for b in opened if b["status"] == "in_progress")
-        you = sum(1 for b in opened if b["needsYou"])
-        view = f"search “{self.query_text}”" if self.query_text else "Now" + "".join(
-            f" +{name}" for flag, name in ((self.show_open, "open"), (self.show_closed, "closed"),
-                                           (self.show_unreviewed, "unreviewed")) if flag)
-        view += " · P0 only" if self.p0_only else ""
-        parts = [("bd-tui", "bold"), (view, ""), (f"{working} working", STATUS_STYLE["prog"]), (f"{you} need you", NEEDS_STYLE)]
+        """The list's steps with the beads left after each, such as Open 127 › now 42, then the board-wide counts.
+
+        The need-you count spans every list, so a closed result that asks Ben a question counts from any view.
+        """
+        beads = [b for b in self.beads.values() if b.get("issue_type") != "epic"]
+        working = sum(1 for b in beads if b["status"] == "in_progress")
+        you = sum(1 for b in beads if bm.asks_ben_now(b))
+        steps = Text(" › ", style=MUTED).join(Text(f"{name} {len(ids)}") for name, ids in self.funnel())
+        parts = [(f"{working} working", STATUS_STYLE["prog"]), (f"{you} need you", NEEDS_STYLE)]
         if self.read_at:
             parts.append((f"read {time.strftime('%H:%M', time.localtime(self.read_at))}", MUTED))
         if self.error:
             parts.append((self.error.splitlines()[0], "bold #f38ba8"))
-        self.query_one("#title", Static).update(joined(parts))
+        self.title_text = Text.assemble(("bd-tui", "bold"), (" · ", MUTED), steps, (" · ", MUTED), joined(parts))
+        self.query_one("#title", Static).update(self.title_text)
 
     def render_keys(self) -> None:
-        """The key list, wrapped to the pane's width, with the views that are on shown in reverse."""
-        on = {"open": self.show_open, "closed": self.show_closed, "unreviewed": self.show_unreviewed,
-              "P0": self.p0_only, "thread order": self.thread_view}
+        """The key strip: the lists and the filters on the first row, the other keys below, wrapped to the pane.
+
+        A list or filter key shows how many beads the tree would list after pressing it, and a key that is on
+        shows in reverse. v appears only on the closed list, the one list it narrows.
+        """
+        scopes = [(key, f"{s} {len(self.funnel(s)[-1][1])}", s == self.scope_name) for s, (key, _, _) in SCOPES.items()]
+        filters = []
+        for name, key, _ in FILTERS:
+            if name == "unreviewed" and self.scope_name != "closed":
+                continue
+            on = self.filters_on[name]
+            left = len(self.funnel(filters={**self.filters_on, name: True})[-1][1])
+            filters.append((key, name if on else f"{name} {left}", on))
+        filters.append(("/", "search", bool(self.query_text)))
+        others = [(key, what, what == "thread" and self.thread_view) for key, what in KEYS]
         width = max(20, (self.size.width or 80) - 2)
-        lines, line, used = [], Text(), 0
-        for key, what in KEYS:
-            size = len(key) + 1 + len(what) + (3 if used else 0)
-            if used and used + size > width:
-                lines.append(line)
-                line, used, size = Text(), 0, size - 3
-            if used:
-                line.append(" · ", style=MUTED)
-            line.append(key, style="bold " + ID)
-            line.append(" " + what, style="reverse" if on.get(what) else MUTED)
-            used += size
-        lines.append(line)
+        lines = wrap_keys([scopes, filters], width) + wrap_keys([others], width)
+        self.keys_text = Text("\n").join(lines)
         keys = self.query_one("#keys", Static)
-        keys.update(Text("\n").join(lines))
+        keys.update(self.keys_text)
         keys.styles.height = len(lines)
 
     # ---------- actions ----------
 
-    def action_toggle(self, flag: str) -> None:
-        setattr(self, flag, not getattr(self, flag))
-        self.render_keys()
+    def action_scope(self, scope: str) -> None:
+        """o, d or c: show the open, deferred or closed list, keeping every filter that applies to it."""
+        self.scope_name = scope
+        if scope != "closed":
+            self.filters_on["unreviewed"] = False
+        self.open_busiest = True
+        self.rebuild()
+
+    def action_narrow(self, name: str) -> None:
+        """n, v or p: narrow the list by one filter, or remove the filter when it is on."""
+        if name == "unreviewed" and self.scope_name != "closed":
+            self.notify("v narrows the closed list to unreviewed results. c shows the closed list.")
+            return
+        self.filters_on[name] = not self.filters_on[name]
         self.rebuild()
 
     def action_thread(self) -> None:
