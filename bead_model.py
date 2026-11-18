@@ -6,7 +6,8 @@ such as `needsYou`, `flags` and `ifSkipped`. The rules for each come from rules/
   - kind: a `kind:<x>` label, then bd's issue type, then a guess from the title.
   - needsYou: a Needs from Ben list in an open bead's newest dated note or description, or in
     an unreviewed closed bead's close reason; a `needs:ben` label; or an open, unblocked
-    decision bead. A sentence that asks Ben in prose counts when no list exists.
+    decision bead. A sentence that asks Ben in prose counts when no list exists. A deferred
+    bead never needs Ben, because deferring it parks the question with the work.
   - flags: the structural checks from the rules, such as a missing `## Summary`.
 
 The module also holds every bd and claude call that bd-tui makes: the export, the reviewed
@@ -444,8 +445,9 @@ def enrich(rows: list[dict]) -> dict[str, dict]:
         b["followups"] = parse_list([b.get("close_reason"), b.get("notes")], FOLLOWUPS, known)
         b["unfiled"] = sum(1 for f in b["followups"] if not f["ids"])
         b["asks"] = asks_of(b, known)
-        b["needsYou"] = (bool(b["asks"]) or NEEDS in b["labels"]
-                         or (b["status"] != "closed" and not b["isBlocked"] and b["kind"]["name"] == "decision"))
+        b["needsYou"] = b["status"] != "deferred" and (
+            bool(b["asks"]) or NEEDS in b["labels"]
+            or (b["status"] != "closed" and not b["isBlocked"] and b["kind"]["name"] == "decision"))
         b["flags"] = flags_of(b)
         b["bucket"] = bucket(b)
     return beads

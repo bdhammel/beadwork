@@ -71,6 +71,8 @@ ROWS = [
          acceptance_criteria="- three export sizes timed\n- [x] p95 per size\n- one size run twice",
          notes="2026-11-05: Plan written; Ben picks the sizes.\n2026-11-06: If skipped written, P0 (was P2).",
          dependencies=[child("ent-aaa"), blocked_by("ent-aaa.1")]),
+    bead("ent-aaa.11", status="deferred", labels=["area:alpha", "kind:decision", "needs:ben"],
+         dependencies=[child("ent-aaa")]),
     bead("ent-aaa.10", issue_type="epic", title="Nested epic", labels=["area:alpha"], dependencies=[child("ent-aaa")]),
     bead("ent-aaa.10.1", status="in_progress", labels=["area:alpha"], dependencies=[child("ent-aaa.10")]),
     bead("ent-bbb", issue_type="epic", status="in_progress", title="Epic with no area"),
