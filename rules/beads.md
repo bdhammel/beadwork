@@ -336,9 +336,10 @@ EOF
 
 The board flags every follow-up bullet without a bead id as unfiled, so name the bead that
 carries any step you would otherwise only mention. File a new one only when no bead on its
-theme is open. The board's `n` key lists every bead with a `Needs from Ben:` bullet, an open
-bead in the open list and an unreviewed result in the closed list, and the board shows each
-bullet in the bead's detail. A closed bead counts as awaiting review until
+theme is open. The board's `n` key lists every open bead and every unreviewed result that holds
+a `Needs from Ben:` bullet, each in its own list. A deferred bead parks its question, so `n`
+never lists it. The board shows each bullet in the bead's detail. A closed bead counts as
+awaiting review until
 Ben adds the `reviewed` label with the board's `m` key, so never add that label yourself.
 
 ## Templates
