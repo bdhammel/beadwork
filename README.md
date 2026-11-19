@@ -12,7 +12,8 @@ the board that reads it is one commit. It is a working personal tool.
 
 - Write beads that an agent can act on and the board can read. See `rules/beads.md`.
 - Write or re-judge a bead's `## If skipped` section and priority. See [Commands](#commands).
-- See what is in progress and what needs you, and mark results reviewed. See [Keys](#keys).
+- See what is in progress and what needs you, mark results reviewed, and close or defer a bead.
+  See [Keys](#keys).
 - Check the board against a synthetic export or your own. See [Test it](#test-it).
 
 ## What is in this directory
@@ -82,6 +83,8 @@ with them.
 | `g` | Show the epic's open beads in dependency order in the detail pane |
 | Enter | Open the bead's full `bd show` text, read-only, in nvim |
 | `m` | Mark a closed bead's result reviewed, and press it again to undo |
+| Shift-`C` | Close the bead after you type its result in one line, which also marks the result reviewed, and on a closed bead reopen it |
+| Shift-`D` | Defer the bead, until a date such as `2026-12-01`, `+2w` or `next monday` when you give one, and on a deferred bead undefer it |
 | `s` | Start a background Claude session on the bead, after you type what it should do |
 | `a` | Attach to the bead's newest session in a new tmux window |
 | `r` `q` | Reread the beads now, and quit |
@@ -94,7 +97,16 @@ that are on. The title's need-you count covers every list, so it also counts a c
 that still asks you a question.
 
 Only you press `m`, because the rules reserve the `reviewed` label for the person who reviews
-the result.
+the result. Shift-`C` adds the label too, because a result that you close the bead with is one
+you wrote, and reopening the bead removes the label, so that its next result waits for your
+review again.
+
+Shift-`C` and Shift-`D` act on a bead row and ask in a prompt first, where Enter acts and Esc
+cancels. A reason you type for a reopen, a defer or an undefer is kept as a dated note, and an
+empty one writes no note. The board refuses to close a bead that has open children, because
+bd closes a bead only after its children. When bd refuses a change, such as a date it cannot
+read, the same key on the same bead brings back what you typed. After a bead leaves the list,
+the cursor moves to the bead after it.
 
 The board rereads the beads every 60 s, so a bead that another session claims or closes moves
 without a key press, and the title bar shows the time of the last read. A reread that finds a
@@ -126,8 +138,9 @@ Run the checks from the repo directory. Expected: `all checks passed` and exit c
 
 ```bash
 cd ~/dev/beadwork
-./test_bd_tui.py          # 40 checks on a synthetic export
-./test_bd_tui.py --live   # also checks the tree and renders every bead in your own export
+./test_bd_tui.py          # 55 checks on a synthetic export, with a fake bd for the keys that write
+./test_bd_tui.py --live   # also checks the tree and renders every bead in your own export, read-only
+./test_bd_tui.py --bd     # also closes, reopens, defers and undefers a bead in a throwaway bd database
 ```
 
 ## What this does not do

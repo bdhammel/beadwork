@@ -11,8 +11,9 @@ such as `needsYou`, `flags` and `ifSkipped`. The rules for each come from rules/
   - flags: the structural checks from the rules, such as a missing `## Summary`.
 
 The module also holds every bd and claude call that bd-tui makes: the export, the reviewed
-label, and the start and listing of Claude sessions named after a bead. It uses only the
-standard library, so that any script can import it without a venv.
+label, closing, reopening, deferring and undeferring a bead, and the start and listing of
+Claude sessions named after a bead. It uses only the standard library, so that any script
+can import it without a venv.
 
 The regular expressions treat \\w, \\b and \\d as ASCII-only, so they are spelled out as ASCII
 classes, while \\s stays Unicode.
@@ -22,6 +23,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+from collections.abc import Callable
 
 REVIEWED = "reviewed"
 NEEDS = "needs:ben"
@@ -87,11 +90,79 @@ def set_reviewed(bead_id: str, reviewed: bool) -> None:
     """Add a closed bead's reviewed label, or remove it again.
 
     Only Ben's m key in bd-tui calls this, because the rules reserve the reviewed label for Ben.
+    close_bead adds the label too, because Ben closes a bead from the board with a result he wrote.
     """
     if not BEAD_ID.match(bead_id):
         raise ValueError(f"not a bead id: {bead_id!r}")
     subprocess.run(["bd", "label", "add" if reviewed else "remove", bead_id, REVIEWED],
                    capture_output=True, text=True, check=True)
+
+
+def bd_write(args: list[str]) -> None:
+    """Run one bd write. A refusal raises CalledProcessError with bd's message in stderr, and a hang raises TimeoutExpired.
+
+    stdin is closed, because bd behaves differently when stdin is a terminal, and the board's terminal is in raw mode.
+    """
+    subprocess.run(["bd", *args], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=EXPORT_TIMEOUT_S,
+                   check=True)
+
+
+def dated(text: str) -> str:
+    """One line of Ben's text as a dated note, so that the board shows it as the bead's newest state."""
+    return f"{time.strftime('%Y-%m-%d')}: {' '.join(text.split())}"
+
+
+# The four writes below run from Ben's Shift-C and Shift-D keys in bd-tui. Each passes a value as --flag=value, so
+# that a reason starting with "-" never reads as a flag, and each writes a dated note only from text Ben typed,
+# because the board reads an open bead's Needs from Ben list from its newest note alone.
+
+def close_bead(bead_id: str, reason: str, run: Callable[[list[str]], None] = bd_write) -> None:
+    """Close a bead with Ben's reason as its result, and mark the result reviewed, because Ben wrote it."""
+    if not BEAD_ID.match(bead_id):
+        raise ValueError(f"not a bead id: {bead_id!r}")
+    # bd closes a bead with an empty reason as "Closed", which leaves the board a result that says nothing.
+    if not reason.strip():
+        raise ValueError("type the result, because bd would record an empty reason as \"Closed\"")
+    run(["close", bead_id, f"--reason={reason.strip()}"])
+    run(["label", "add", bead_id, REVIEWED])
+
+
+def reopen_bead(bead_id: str, why: str, run: Callable[[list[str]], None] = bd_write) -> None:
+    """Reopen a closed bead and remove its reviewed label, so that its next result waits for review again.
+
+    bd reopen clears the close reason and keeps the labels, and it stores no reason, so a typed reason
+    becomes a dated note instead.
+    """
+    if not BEAD_ID.match(bead_id):
+        raise ValueError(f"not a bead id: {bead_id!r}")
+    run(["reopen", bead_id])
+    run(["label", "remove", bead_id, REVIEWED])
+    if why.strip():
+        run(["update", bead_id, f"--append-notes={dated('Reopened: ' + why)}"])
+
+
+def defer_bead(bead_id: str, until: str, why: str, run: Callable[[list[str]], None] = bd_write) -> None:
+    """Defer a bead, until a date when one is given, such as 2026-12-01, +2w or next monday.
+
+    bd defer appends its --reason to the notes without a date, so the reason goes in already dated.
+    """
+    if not BEAD_ID.match(bead_id):
+        raise ValueError(f"not a bead id: {bead_id!r}")
+    args = ["defer", bead_id]
+    if until.strip():
+        args.append(f"--until={until.strip()}")
+    if why.strip():
+        args.append(f"--reason={dated('Deferred: ' + why)}")
+    run(args)
+
+
+def undefer_bead(bead_id: str, why: str, run: Callable[[list[str]], None] = bd_write) -> None:
+    """Return a deferred bead to the open list. bd undefer takes no reason, so a typed one becomes a dated note."""
+    if not BEAD_ID.match(bead_id):
+        raise ValueError(f"not a bead id: {bead_id!r}")
+    run(["undefer", bead_id])
+    if why.strip():
+        run(["update", bead_id, f"--append-notes={dated('Undeferred: ' + why)}"])
 
 
 def child_env() -> dict:

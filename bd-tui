@@ -24,6 +24,11 @@ Keys never use Ctrl-h, Ctrl-j, Ctrl-k or Ctrl-l, because vim-tmux-navigator move
 panes with them. m marks a closed result reviewed and m again undoes it. Only Ben presses m,
 because the rules reserve the reviewed label for him.
 
+Shift-C closes the selected bead with a one-line result and marks the result reviewed, because
+Ben wrote it, and on a closed bead Shift-C reopens it. Shift-D defers the bead, until a date
+when one is given, and on a deferred bead Shift-D undefers it. Each key asks in a prompt first,
+and Esc cancels it. When a bead leaves the list, the cursor moves to the bead after it.
+
 Text is plain weight by default. Bold marks only a bead's title and the section headings, and
 colour carries status, so a narrow pane still reads at a glance.
 """
@@ -36,6 +41,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
+from datetime import datetime
 
 from rich.console import Group, RenderableType
 from rich.table import Table
@@ -80,10 +86,25 @@ SCOPES = {"open": ("o", "Open", lambda b: b["status"] not in ("closed", "deferre
 # unreviewed applies only to the closed list, because only a closed bead has a result to review.
 FILTERS = [("now", "n", bm.needs_ben_now), ("unreviewed", "v", lambda b: b["awaiting"]),
            ("P0", "p", lambda b: b.get("priority") == 0)]
-# The other keys, in short words so that they fit one line of Ben's 95-column pane. The README spells each key out,
-# and j and k are left out because the arrow keys move the cursor too.
-KEYS = [("h l", "fold"), ("g", "thread"), ("⏎", "nvim"), ("m", "reviewed"), ("s", "session"), ("a", "attach"),
-        ("r", "reload"), ("q", "quit")]
+# The other keys, in short words so that they fit one line of Ben's 95-column pane. The README spells each key out.
+# j, k, h and l are left out because the arrow keys move and fold too, and q is left out because it quits as in a pager.
+KEYS = [("g", "thread"), ("⏎", "nvim"), ("m", "reviewed"), ("C", "close"), ("D", "defer"), ("s", "session"),
+        ("a", "attach"), ("r", "reload")]
+# What Shift-C and Shift-D do to the selected bead, picked by its status, as act -> (the key, the word for the
+# Enter hint, the prompt's lead line, the fields as (name, label, placeholder, required)).
+ACTS = {
+    "close": ("C", "closes", "Close {id}. The text becomes the bead's result, so say what was done or why the bead stops. "
+              "The result counts as reviewed, because you wrote it.",
+              [("reason", "Result", "what was done, or why the bead stops", True)]),
+    "reopen": ("C", "reopens", "Reopen {id}. bd clears its result, and its next result waits for your review again.",
+               [("why", "Why", "optional, kept as a dated note", False)]),
+    "defer": ("D", "defers", "Defer {id}. It leaves the open list until the date you give, or until you undefer it "
+              "with D when you give none.",
+              [("until", "Until", "optional: 2026-12-01, +2w or next monday", False),
+               ("why", "Why", "optional, kept as a dated note: what brings it back", False)]),
+    "undefer": ("D", "undefers", "Undefer {id}. It returns to the open list.",
+                [("why", "Why", "optional, kept as a dated note", False)]),
+}
 
 
 def short(bead_id: str, epic: str | None) -> str:
@@ -93,6 +114,16 @@ def short(bead_id: str, epic: str | None) -> str:
 
 def note_body(note: dict) -> str:
     return re.sub(r"^[:\s*]+", "", bm.DATE_RE.sub("", note["text"], count=1))
+
+
+def local_date(stamp: str | None) -> str:
+    """A bd timestamp, which is UTC, as the local date, so that a bead deferred to 2026-12-01 reads 2026-12-01."""
+    if not stamp:
+        return ""
+    try:
+        return datetime.fromisoformat(stamp).astimezone().strftime("%Y-%m-%d")
+    except ValueError:
+        return stamp[:10]
 
 
 def fit(text: str, width: int) -> str:
@@ -252,6 +283,58 @@ class AskScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class ActScreen(ModalScreen[dict | None]):
+    """The prompt for Shift-C and Shift-D: what the key will do, then one or two one-line fields.
+
+    Enter moves to the next field and acts from the last one. An empty required field keeps the prompt
+    open with a note under it, so nothing typed is lost.
+    """
+
+    DEFAULT_CSS = """
+    ActScreen { align: center middle; }
+    ActScreen > Vertical { width: 90%; max-width: 100; height: auto; border: round $accent; padding: 0 1; background: $panel; }
+    ActScreen .field { margin-top: 1; color: $text-muted; }
+    ActScreen #act-error { color: $error; }
+    """
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def __init__(self, act: str, bead_id: str, title: str, values: dict) -> None:
+        super().__init__()
+        self.act, self.bead_id, self.title_line, self.values = act, bead_id, title, values
+        _, self.word, self.lead, self.fields = ACTS[act]
+
+    def compose(self) -> ComposeResult:
+        last = "on the last field " if len(self.fields) > 1 else ""
+        with Vertical():
+            yield Static(Text.assemble((self.title_line, "bold"), "\n", self.lead.format(id=self.bead_id)))
+            for name, label, placeholder, _ in self.fields:
+                yield Static(label, classes="field")
+                yield LineInput(value=self.values.get(name, ""), placeholder=placeholder, id=f"act-{name}")
+            yield Static("", id="act-error")
+            yield Static(f"Enter {last}{self.word} it, Esc cancels.", classes="field")
+
+    def on_mount(self) -> None:
+        self.query_one(f"#act-{self.fields[0][0]}", LineInput).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        names = [name for name, _, _, _ in self.fields]
+        at = names.index(event.input.id.removeprefix("act-"))
+        if at + 1 < len(names):
+            self.query_one(f"#act-{names[at + 1]}", LineInput).focus()
+            return
+        values = {name: self.query_one(f"#act-{name}", LineInput).value.strip() for name in names}
+        missing = [(name, label) for name, label, _, required in self.fields if required and not values[name]]
+        if missing:
+            self.query_one("#act-error", Static).update(f"Type the {missing[0][1].lower()} first.")
+            self.query_one(f"#act-{missing[0][0]}", LineInput).focus()
+            return
+        self.dismiss(values)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class BeadBoard(App):
     TITLE = "bd-tui"
     ENABLE_COMMAND_PALETTE = False
@@ -275,6 +358,8 @@ class BeadBoard(App):
         Binding("escape", "clear_search", show=False),
         Binding("r", "reload", show=False),
         Binding("m", "mark_reviewed", show=False),
+        Binding("C", "act('C')", show=False),
+        Binding("D", "act('D')", show=False),
         Binding("s", "start_session", show=False),
         Binding("a", "attach", show=False),
         Binding("q", "quit", show=False),
@@ -282,10 +367,12 @@ class BeadBoard(App):
 
     def __init__(self, load_rows: Callable[[], list[dict]] = bm.export_beads,
                  load_sessions: Callable[[], list[dict]] | None = lambda: bm.list_sessions(False),
-                 set_reviewed: Callable[[str, bool], None] = bm.set_reviewed, refresh_s: float = REFRESH_S) -> None:
+                 set_reviewed: Callable[[str, bool], None] = bm.set_reviewed, refresh_s: float = REFRESH_S,
+                 run_bd: Callable[[list[str]], None] = bm.bd_write) -> None:
         super().__init__()
         self.load_rows, self.load_sessions, self.set_reviewed = load_rows, load_sessions, set_reviewed
-        self.refresh_s = refresh_s
+        self.refresh_s, self.run_bd = refresh_s, run_bd
+        self.drafts: dict[tuple[str, str], dict] = {}  # (act, bead id) -> what Ben typed into a prompt whose bd call failed
         self.rows_key = ""  # the last export as JSON, so a reread that changes nothing skips the rebuild
         self.detail_for: tuple | None = None  # what the detail pane shows, so a rebuild keeps its scroll
         self.beads: dict[str, dict] = {}
@@ -473,6 +560,9 @@ class BeadBoard(App):
     def rebuild(self) -> None:
         tree = self.query_one(BeadTree)
         keep = tree.cursor_node.data if tree.cursor_node else None
+        # The bead rows Ben can see, in order, so that a bead that leaves the list hands the cursor to the bead after it.
+        seen = [n.data[1] for n in self.walk(tree.root)
+                if n.data and n.data[0] == "bead" and all(p.is_expanded for p in self.ancestors(n))]
         # The tree's guides, marks, id and priority take about 22 columns of a bead row and 32 of an epic row.
         pane = tree.size.width or self.size.width
         bead_w, epic_w = max(12, min(100, pane - 22)), max(12, min(90, pane - 32))
@@ -486,6 +576,7 @@ class BeadBoard(App):
         self.rebuilding = True
         tree.clear()
         target: TreeNode | None = None
+        leaves: dict[str, TreeNode] = {}
         for area, epics in groups:
             all_ids = [i for _, ids in epics for i in ids]
             an = tree.root.add(self.area_label(area, all_ids), data=("area", area),
@@ -496,18 +587,24 @@ class BeadBoard(App):
                 if keep == en.data:
                     target = en
                 for bid in ids:
-                    node = en.add_leaf(self.bead_label(bid, epic, bead_w), data=("bead", bid))
-                    if keep == ("bead", bid):
-                        target = node
+                    leaves[bid] = en.add_leaf(self.bead_label(bid, epic, bead_w), data=("bead", bid))
             if keep and keep[0] == "area" and keep[1] == area:
                 target = an
+        if keep and keep[0] == "bead":
+            target = leaves.get(keep[1])
+            if target is None and keep[1] in seen:
+                at = seen.index(keep[1])
+                target = next((leaves[i] for i in seen[at + 1:] + seen[:at][::-1] if i in leaves), None)
         self.rebuilding = False
         self.render_title()
         self.render_keys()
-        self.call_after_refresh(self.restore_cursor, target, keep)
+        self.call_after_refresh(self.restore_cursor, target)
 
-    def restore_cursor(self, target: TreeNode | None, keep) -> None:
+    def restore_cursor(self, target: TreeNode | None) -> None:
         tree = self.query_one(BeadTree)
+        # A tree lays out its rows only when it is idle, and a tree behind an open prompt never is, so a rebuilt node
+        # would report line -1 and the cursor would land on the first row. Reading last_line lays the rows out now.
+        _ = tree.last_line
         if target is None:
             # The first shown bead, so the detail opens on a bead rather than an area.
             target = next((n for n in self.walk(tree.root) if n.data and n.data[0] == "bead"
@@ -583,7 +680,8 @@ class BeadBoard(App):
     def bead_text(self, bid: str) -> Group:
         """The approved order: why it is listed, If skipped, labels, Done when, thread, latest note, follow-ups."""
         b, epic = self.beads[bid], bm.epic_of(self.beads, bid)
-        why = [(STATUS_WORD[b["bucket"]], STATUS_STYLE[b["bucket"]])]
+        until = local_date(b.get("defer_until")) if b["bucket"] == "deferred" else ""
+        why = [(STATUS_WORD[b["bucket"]] + (f" until {until}" if until else ""), STATUS_STYLE[b["bucket"]])]
         why += [("needs you", NEEDS_STYLE)] if b["needsYou"] else []
         why += [("to review", REVIEW_STYLE)] if b["awaiting"] else []
         if self.sessions.get(bid):
@@ -836,6 +934,66 @@ class BeadBoard(App):
         done = f"{bid} marked reviewed · m again undoes" if reviewed else f"{bid} is a result to review again"
         self.call_from_thread(self.notify, done)
         self.call_from_thread(self.action_reload)
+
+    def action_act(self, key: str) -> None:
+        """Shift-C or Shift-D on a bead row: pick the act from the bead's status, then ask for its fields.
+
+        C closes an open or deferred bead and reopens a closed one. D defers an open bead and undefers a
+        deferred one. The bead id is fixed here, because a reread can rebuild the tree while the prompt is open.
+        """
+        data = self.selected()
+        if not data or data[0] != "bead":
+            self.notify(f"{key} acts on a bead row. Move the cursor to a bead.")
+            return
+        b = self.beads[data[1]]
+        bid, status = b["id"], b["status"]
+        if key == "C":
+            act = "reopen" if status == "closed" else "close"
+        elif status == "closed":
+            self.notify(f"{bid} is closed, so D cannot defer it. C reopens it.")
+            return
+        else:
+            act = "undefer" if status == "deferred" else "defer"
+        if act == "close":
+            kids = [i for i in bm.descendants(self.beads, bid) if self.beads[i]["status"] != "closed"]
+            if kids:
+                self.notify(f"{bid} has {len(kids)} open child beads, and bd closes a bead only after its children.")
+                return
+
+        def run(values: dict | None) -> None:
+            if values is not None:
+                self.act(act, bid, values)
+
+        self.push_screen(ActScreen(act, bid, b.get("title") or "", self.drafts.get((act, bid), {})), run)
+
+    @work(thread=True, group="act")
+    def act(self, act: str, bid: str, values: dict) -> None:
+        write = {"close": lambda: bm.close_bead(bid, values["reason"], self.run_bd),
+                 "reopen": lambda: bm.reopen_bead(bid, values["why"], self.run_bd),
+                 "defer": lambda: bm.defer_bead(bid, values["until"], values["why"], self.run_bd),
+                 "undefer": lambda: bm.undefer_bead(bid, values["why"], self.run_bd)}[act]
+        try:
+            write()
+        except (ValueError, subprocess.SubprocessError, OSError) as e:
+            msg = (getattr(e, "stderr", "") or str(e)).strip()
+            self.call_from_thread(self.act_failed, act, bid, values, msg)
+            return
+        self.call_from_thread(self.act_done, act, bid)
+
+    def act_failed(self, act: str, bid: str, values: dict, msg: str) -> None:
+        """Keep what Ben typed, so that the same key on the same bead opens the prompt with it."""
+        self.drafts[(act, bid)] = values
+        self.notify(f"bd {act} {bid} failed: {msg}\n{ACTS[act][0]} again brings back what you typed.",
+                    severity="error", timeout=15)
+        self.action_reload()
+
+    def act_done(self, act: str, bid: str) -> None:
+        self.drafts.pop((act, bid), None)
+        self.notify({"close": f"{bid} closed and marked reviewed · C on it in the closed list reopens it",
+                     "reopen": f"{bid} reopened · C again closes it",
+                     "defer": f"{bid} deferred · d lists it, and D there undefers it",
+                     "undefer": f"{bid} is open again · D again defers it"}[act])
+        self.action_reload()
 
     def action_start_session(self) -> None:
         bid = self.selected_id()
