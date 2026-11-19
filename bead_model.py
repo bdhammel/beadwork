@@ -11,9 +11,8 @@ such as `needsYou`, `flags` and `ifSkipped`. The rules for each come from rules/
   - flags: the structural checks from the rules, such as a missing `## Summary`.
 
 The module also holds every bd and claude call that bd-tui makes: the export, the reviewed
-label, closing, reopening, deferring and undeferring a bead, and the start and listing of
-Claude sessions named after a bead. It uses only the standard library, so that any script
-can import it without a venv.
+label, a bead's status, and the start and listing of Claude sessions named after a bead. It
+uses only the standard library, so that any script can import it without a venv.
 
 The regular expressions treat \\w, \\b and \\d as ASCII-only, so they are spelled out as ASCII
 classes, while \\s stays Unicode.
@@ -90,7 +89,7 @@ def set_reviewed(bead_id: str, reviewed: bool) -> None:
     """Add a closed bead's reviewed label, or remove it again.
 
     Only Ben's m key in bd-tui calls this, because the rules reserve the reviewed label for Ben.
-    close_bead adds the label too, because Ben closes a bead from the board with a result he wrote.
+    close_bead adds the label too, because Ben closes a bead from the board's status menu with a result he wrote.
     """
     if not BEAD_ID.match(bead_id):
         raise ValueError(f"not a bead id: {bead_id!r}")
@@ -112,9 +111,44 @@ def dated(text: str) -> str:
     return f"{time.strftime('%Y-%m-%d')}: {' '.join(text.split())}"
 
 
-# The four writes below run from Ben's Shift-C and Shift-D keys in bd-tui. Each passes a value as --flag=value, so
-# that a reason starting with "-" never reads as a flag, and each writes a dated note only from text Ben typed,
-# because the board reads an open bead's Needs from Ben list from its newest note alone.
+# The writes below run from the status menu that Shift-S opens in bd-tui, through set_status. Each passes a value as
+# --flag=value, so that a reason starting with "-" never reads as a flag. Only a defer writes a dated note, and only
+# from text Ben typed, because the board reads an open bead's Needs from Ben list from its newest note alone.
+
+# The statuses the status menu offers, in menu order. bd's stored "blocked" is left out, because bd then drops the bead
+# from both bd ready and bd blocked and nothing ever clears it. "pinned" and "hooked" are left out, because nothing uses them.
+STATUSES = ("open", "in_progress", "deferred", "closed")
+
+
+def set_status(bead_id: str, current: str, target: str, values: dict | None = None,
+               run: Callable[[list[str]], None] = bd_write) -> None:
+    """Move a bead from its current status to open, in_progress, deferred or closed.
+
+    A close is one step. Every other move goes through open first, because a plain bd status update would keep what
+    the old status left behind: leaving closed reopens the bead, which drops its reviewed label; leaving deferred
+    undefers it, which clears its return date; and leaving in_progress, or a status the menu does not offer, releases
+    the claim. Then in_progress claims the bead and deferred defers it. values holds what the board asked for:
+    "reason" for closed, and "until" and "why" for deferred.
+    """
+    if not BEAD_ID.match(bead_id):
+        raise ValueError(f"not a bead id: {bead_id!r}")
+    if target not in STATUSES or target == current:
+        raise ValueError(f"cannot move {bead_id} from {current} to {target}")
+    values = values or {}
+    if target == "closed":
+        close_bead(bead_id, values.get("reason", ""), run)
+        return
+    if current == "closed":
+        reopen_bead(bead_id, run)
+    elif current == "deferred":
+        undefer_bead(bead_id, run)
+    elif current != "open":
+        run(["update", bead_id, "--status=open", "--assignee="])
+    if target == "in_progress":
+        run(["update", bead_id, "--claim"])
+    elif target == "deferred":
+        defer_bead(bead_id, values.get("until", ""), values.get("why", ""), run)
+
 
 def close_bead(bead_id: str, reason: str, run: Callable[[list[str]], None] = bd_write) -> None:
     """Close a bead with Ben's reason as its result, and mark the result reviewed, because Ben wrote it."""
@@ -127,18 +161,15 @@ def close_bead(bead_id: str, reason: str, run: Callable[[list[str]], None] = bd_
     run(["label", "add", bead_id, REVIEWED])
 
 
-def reopen_bead(bead_id: str, why: str, run: Callable[[list[str]], None] = bd_write) -> None:
+def reopen_bead(bead_id: str, run: Callable[[list[str]], None] = bd_write) -> None:
     """Reopen a closed bead and remove its reviewed label, so that its next result waits for review again.
 
-    bd reopen clears the close reason and keeps the labels, and it stores no reason, so a typed reason
-    becomes a dated note instead.
+    bd reopen clears the close reason but keeps the labels, so the label is removed here.
     """
     if not BEAD_ID.match(bead_id):
         raise ValueError(f"not a bead id: {bead_id!r}")
     run(["reopen", bead_id])
     run(["label", "remove", bead_id, REVIEWED])
-    if why.strip():
-        run(["update", bead_id, f"--append-notes={dated('Reopened: ' + why)}"])
 
 
 def defer_bead(bead_id: str, until: str, why: str, run: Callable[[list[str]], None] = bd_write) -> None:
@@ -156,13 +187,11 @@ def defer_bead(bead_id: str, until: str, why: str, run: Callable[[list[str]], No
     run(args)
 
 
-def undefer_bead(bead_id: str, why: str, run: Callable[[list[str]], None] = bd_write) -> None:
-    """Return a deferred bead to the open list. bd undefer takes no reason, so a typed one becomes a dated note."""
+def undefer_bead(bead_id: str, run: Callable[[list[str]], None] = bd_write) -> None:
+    """Return a deferred bead to the open list, which clears its return date."""
     if not BEAD_ID.match(bead_id):
         raise ValueError(f"not a bead id: {bead_id!r}")
     run(["undefer", bead_id])
-    if why.strip():
-        run(["update", bead_id, f"--append-notes={dated('Undeferred: ' + why)}"])
 
 
 def child_env() -> dict:

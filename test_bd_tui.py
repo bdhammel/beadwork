@@ -7,7 +7,7 @@
 
   ./test_bd_tui.py          the synthetic export below; exits 1 on any failed check
   ./test_bd_tui.py --live   also checks the open, now and closed lists on today's `bd export` (needs BEADS_DIR)
-  ./test_bd_tui.py --bd     also closes, reopens, defers and undefers a bead in a throwaway bd database
+  ./test_bd_tui.py --bd     also moves a bead through every status change in a throwaway bd database
 
 Runs from any directory with no venv, because uv installs Textual from the script header.
 The fixture is synthetic, so that the repo holds no real beads. --live only reads, and --bd
@@ -320,7 +320,7 @@ async def check_synthetic() -> None:
 
 
 def fake_bd(rows: list[dict], calls: list) -> Callable[[list[str]], None]:
-    """A stand-in for bd that applies close, reopen, defer, undefer, notes and labels to a private copy of the rows.
+    """A stand-in for bd that applies close, reopen, defer, undefer, claims, status, notes and labels to the rows.
 
     A defer until "notadate" fails the way bd 1.3.4 does, so the board's failure path runs too.
     """
@@ -335,9 +335,8 @@ def fake_bd(rows: list[dict], calls: list) -> Callable[[list[str]], None]:
                 labels.remove(name)
             return
         verb, bid = args[:2]
-        opts = dict(a[2:].split("=", 1) for a in args[2:])
+        opts = {k: v for k, _, v in (a[2:].partition("=") for a in args[2:])}
         row = next(r for r in rows if r["id"] == bid)
-        note = opts.get("reason") if verb == "defer" else opts.get("append-notes")
         if verb == "defer" and opts.get("until") == "notadate":
             raise subprocess.CalledProcessError(1, ["bd", *args], stderr='Error: invalid --until format "notadate"')
         if verb == "close":
@@ -348,126 +347,123 @@ def fake_bd(rows: list[dict], calls: list) -> Callable[[list[str]], None]:
             row.update(status="deferred", defer_until="2026-12-01T12:00:00Z" if "until" in opts else None)
         elif verb == "undefer":
             row.update(status="open", defer_until=None)
+        elif "claim" in opts:
+            row.update(status="in_progress", assignee="ben")
+        elif verb == "update":
+            row.update({k: v or None for k, v in opts.items() if k in ("status", "assignee")})
+        note = opts.get("reason") if verb == "defer" else opts.get("append-notes")
         if note:
             row["notes"] = (row.get("notes") + "\n" if row.get("notes") else "") + note
     return run
 
 
-async def check_actions() -> None:
-    """Shift-C and Shift-D ask in a prompt, then write the right bd calls; refusals and failures write nothing wrong."""
+async def check_status_menu() -> None:
+    """Shift-S opens the status menu, and each status writes the right bd calls; refusals and failures write nothing wrong."""
     rows, calls = copy.deepcopy(ROWS) + [bead("ent-ccc.1", dependencies=[child("ent-ccc")])], []
-    row = lambda bid: next(r for r in rows if r["id"] == bid)
     today = time.strftime("%Y-%m-%d")
     app = tui.BeadBoard(load_rows=lambda: copy.deepcopy(rows), load_sessions=None, run_bd=fake_bd(rows, calls), refresh_s=0)
     async with app.run_test(size=(200, 60)) as pilot:
         await settle(app, pilot)
         tree = app.query_one(tui.BeadTree)
+        menu = lambda: isinstance(app.screen, tui.StatusScreen)
         prompt = lambda: isinstance(app.screen, tui.ActScreen)
         field = lambda name: app.screen.query_one(f"#act-{name}")
 
-        # C on a bead with an open child, on an epic row, and D on a closed bead open no prompt.
-        tree.move_cursor(bead_nodes(app)["ent-ccc"])
-        await pilot.press("C")
-        await pilot.pause()
-        epic = next(n for n in app.walk(tree.root) if n.data and n.data[:2] == ("epic", "ent-aaa"))
-        tree.move_cursor(epic)
-        await pilot.press("C", "D")
-        await pilot.pause()
-        check(not prompt() and calls == [], "C on a bead with an open child or on an epic row, and D on an epic row, open no prompt")
+        async def press(*keys: str) -> None:
+            """Each key, then a pause, because a letter sent before the menu or prompt takes focus reaches the tree."""
+            for key in keys:
+                await pilot.press(key)
+                await pilot.pause()
 
-        # C on an open bead: an empty result keeps the prompt open, letters stay in the box, and Esc writes nothing.
+        async def on(bid: str, *keys: str) -> None:
+            """S on a bead, then the keys, then wait for any bd write to finish and the board to reread."""
+            tree.move_cursor(bead_nodes(app)[bid])
+            await press("S", *keys)
+            await settle(app, pilot)
+
+        # S on an epic row opens no menu. On a working bead with an open child, the menu greys out in progress and closed.
+        tree.move_cursor(next(n for n in app.walk(tree.root) if n.data and n.data[:2] == ("epic", "ent-aaa")))
+        await press("S")
+        check(not menu() and calls == [], "S on an epic row opens no menu")
+        await on("ent-ccc")
+        greyed = [s for s in bm.STATUSES if app.screen.query_one(tui.MenuList).get_option(s).disabled] if menu() else None
+        check(greyed == ["in_progress", "closed"] and not banned_bindings(app),
+              f"the menu greys out the current status, and closed while the bead has an open child: {greyed}")
+        await press("c", "w", "escape")
+        check(not menu() and calls == [], "the letters of greyed-out rows pick nothing, and Esc closes the menu without a bd call")
+
+        # c on an open bead opens the close prompt: an empty result keeps it open, and a rebuild under it keeps text and cursor.
         seen = [n.data[1] for n in app.walk(tree.root) if n.data and n.data[0] == "bead" and all(p.is_expanded for p in app.ancestors(n))]
         after = seen[seen.index("ent-aaa.4") + 1]
-        tree.move_cursor(bead_nodes(app)["ent-aaa.4"])
-        await pilot.press("C")
-        await pilot.pause()
-        check(prompt() and app.screen.act == "close" and not banned_bindings(app),
-              "C on an open bead opens the close prompt, and no binding uses Ctrl-h/j/k/l with it open")
-        await pilot.press("enter")
-        await pilot.pause()
-        check(prompt() and "Type the result first" in str(app.screen.query_one("#act-error").content) and calls == [],
-              "an empty result keeps the close prompt open and calls no bd")
-        await pilot.press(*"Done: CD export")
+        await on("ent-aaa.4", "c", "enter")
+        check(prompt() and app.screen.target == "closed" and "Type the result first" in str(app.screen.query_one("#act-error").content)
+              and not banned_bindings(app) and calls == [],
+              "c opens the close prompt, where an empty result keeps it open and calls no bd")
+        await pilot.press(*"Done: So we close it")
         app.set_sessions({"ent-aaa.2": "working"})
         await pilot.resize_terminal(180, 50)
         await pilot.pause()
-        check(prompt() and field("reason").value == "Done: CD export" and tree.cursor_node.data == ("bead", "ent-aaa.4"),
-              "C and D typed in the prompt stay in it, and a session poll and a resize under it keep the text and the cursor")
-        await pilot.press("escape")
-        await pilot.pause()
-        check(not prompt() and calls == [], "Esc closes the prompt and calls no bd")
-
-        await pilot.press("C")
-        await pilot.pause()
-        await pilot.press(*"Done: CD export", "enter")
+        check(prompt() and field("reason").value == "Done: So we close it" and tree.cursor_node.data == ("bead", "ent-aaa.4"),
+              "letters typed in the prompt stay in it, and a session poll and a resize under it keep the text and the cursor")
+        await press("enter")
         await settle(app, pilot)
-        check(calls == [["close", "ent-aaa.4", "--reason=Done: CD export"], ["label", "add", "ent-aaa.4", "reviewed"]],
+        check(calls == [["close", "ent-aaa.4", "--reason=Done: So we close it"], ["label", "add", "ent-aaa.4", "reviewed"]],
               f"Enter closes the bead with the typed result and marks it reviewed: {calls}")
         check("ent-aaa.4" not in bead_nodes(app) and tree.cursor_node.data == ("bead", after) and after != seen[0],
               f"the closed bead leaves the open list, and the cursor moves to the bead after it, {after}")
 
-        # C on the closed bead reopens it, removes the review mark and keeps a typed reason as a dated note.
+        # o on a closed bead reopens it and removes the review mark. Enter on the first open row claims it, and o releases it.
         calls.clear()
-        await pilot.press("c")
-        await settle(app, pilot)
-        tree.move_cursor(bead_nodes(app)["ent-aaa.4"])
-        await pilot.press("C")
-        await pilot.pause()
-        await pilot.press(*"not done", "enter")
-        await settle(app, pilot)
-        check(calls == [["reopen", "ent-aaa.4"], ["label", "remove", "ent-aaa.4", "reviewed"],
-                        ["update", "ent-aaa.4", f"--append-notes={today}: Reopened: not done"]]
-              and app.beads["ent-aaa.4"]["status"] == "open" and "reviewed" not in app.beads["ent-aaa.4"]["labels"],
-              f"C on a closed bead reopens it, removes reviewed and dates the reason: {calls}")
+        await press("c")
+        await on("ent-aaa.4", "o")
+        reopened = calls[:]
+        await press("o")
+        await on("ent-aaa.4", "enter")
+        claimed = app.beads["ent-aaa.4"]["status"]
+        await on("ent-aaa.4", "o")
+        check(reopened == [["reopen", "ent-aaa.4"], ["label", "remove", "ent-aaa.4", "reviewed"]]
+              and calls[2:] == [["update", "ent-aaa.4", "--claim"], ["update", "ent-aaa.4", "--status=open", "--assignee="]]
+              and claimed == "in_progress" and app.beads["ent-aaa.4"]["status"] == "open",
+              f"o reopens a closed bead without its review mark, Enter on the first row claims it, and o releases it: {calls}")
 
-        # D defers: Enter moves from Until to Why, a failed bd call keeps the text, and D again brings it back.
+        # j and k move the menu, and Enter on deferred opens the defer prompt. A failed defer keeps the text for the next try.
         calls.clear()
-        await pilot.press("o")
-        await settle(app, pilot)
-        tree.move_cursor(bead_nodes(app)["ent-aaa.2"])
-        await pilot.press("D")
-        await pilot.pause()
-        await pilot.press(*"notadate", "enter")
-        await pilot.pause()
+        await on("ent-aaa.2", "j", "k", "j", "enter")
+        check(prompt() and app.screen.target == "deferred", "j and k move the menu, and Enter on deferred opens the defer prompt")
+        await press(*"notadate", "enter")
         check(prompt() and app.screen.focused is field("why"), "Enter in the Until field moves to the Why field")
         await pilot.press(*"waits on the API key", "enter")
         await settle(app, pilot)
         check(not prompt() and app.beads["ent-aaa.2"]["status"] == "open" and app.drafts,
               "a defer that bd refuses leaves the bead open and keeps what was typed")
-        tree.move_cursor(bead_nodes(app)["ent-aaa.2"])
-        await pilot.press("D")
-        await pilot.pause()
+        await on("ent-aaa.2", "d")
         check(prompt() and field("until").value == "notadate" and field("why").value == "waits on the API key",
-              "D again opens the prompt with the text of the failed defer")
+              "S and d again open the prompt with the text of the failed defer")
         field("until").value = "2026-12-01"
         field("why").focus()
-        await pilot.press("enter")
+        await press("enter")
         await settle(app, pilot)
         check(calls[-1] == ["defer", "ent-aaa.2", "--until=2026-12-01", f"--reason={today}: Deferred: waits on the API key"]
               and not app.drafts and "ent-aaa.2" not in bead_nodes(app),
-              f"Enter on the Why field defers the bead until the date, with the reason as a dated note: {calls[-1]}")
-        await pilot.press("d")
-        await settle(app, pilot)
+              f"the defer runs with the date, and the reason as a dated note: {calls[-1]}")
+        await press("d")
         tree.move_cursor(bead_nodes(app)["ent-aaa.2"])
         await pilot.pause()
         body = plain(app.detail)
         check("deferred until 2026-12-01" in body and "Latest " + today in body and "Deferred: waits on the API key" in body,
-              "the deferred list shows the bead with its date and its reason as the Latest note")
+              "the deferred list shows the bead with its return date and its reason as the Latest note")
 
-        # D on the deferred bead undefers it, and an empty reason writes no note.
+        # w on a deferred bead undefers it before it claims it, so no return date is left behind.
         calls.clear()
-        await pilot.press("D")
-        await pilot.pause()
-        await pilot.press("enter")
-        await settle(app, pilot)
-        check(calls == [["undefer", "ent-aaa.2"]] and app.beads["ent-aaa.2"]["status"] == "open",
-              f"D on a deferred bead undefers it, and an empty reason writes no note: {calls}")
+        await on("ent-aaa.2", "w")
+        check(calls == [["undefer", "ent-aaa.2"], ["update", "ent-aaa.2", "--claim"]] and app.beads["ent-aaa.2"]["status"] == "in_progress",
+              f"w on a deferred bead undefers it, then claims it: {calls}")
     check(len(tui.wrap_keys([[(k, w, False) for k, w in tui.KEYS]], 93)) == 1,
           "the key strip's second row still fits one line of a 95-column pane")
 
 
 def check_bd_scratch() -> None:
-    """Run the four writes through the real bd on a throwaway database, because a fake bd cannot catch a wrong flag."""
+    """Move one bead through every status change on the real bd and a throwaway database, because a fake bd cannot catch a wrong flag."""
     with tempfile.TemporaryDirectory() as d:
         env = {**os.environ, "BEADS_DIR": os.path.join(d, ".beads")}  # passed on every call, so the real database is never touched
 
@@ -483,29 +479,35 @@ def check_bd_scratch() -> None:
         bid = subprocess.run(["bd", "create", "Scratch bead", "-p", "2", "--silent"], cwd=d, env=env,
                              capture_output=True, text=True, check=True).stdout.strip()
         today = time.strftime("%Y-%m-%d")
-        bm.close_bead(bid, "-Done: a reason that starts with a dash", run)
-        s = show(bid)
-        check(s["status"] == "closed" and s.get("close_reason") == "-Done: a reason that starts with a dash"
-              and "reviewed" in (s.get("labels") or []), f"bd: close_bead closes with the reason and adds reviewed: {s.get('close_reason')!r}")
-        bm.reopen_bead(bid, "not done", run)
-        s = show(bid)
-        check(s["status"] == "open" and "reviewed" not in (s.get("labels") or [])
-              and (s.get("notes") or "").endswith(f"{today}: Reopened: not done"),
-              "bd: reopen_bead reopens, removes reviewed and appends the dated reason")
-        bm.defer_bead(bid, "+2w", "waits on the API key", run)
-        s = show(bid)
-        check(s["status"] == "deferred" and s.get("defer_until") and s["notes"].endswith(f"\n{today}: Deferred: waits on the API key"),
-              f"bd: defer_bead defers until a date and appends the dated reason on its own line: {s.get('defer_until')}")
-        bm.undefer_bead(bid, "", run)
-        s = show(bid)
-        check(s["status"] == "open" and not s.get("defer_until") and s["notes"].endswith("Deferred: waits on the API key"),
-              "bd: undefer_bead reopens the bead, and an empty reason writes no note")
+        reviewed = lambda s: "reviewed" in (s.get("labels") or [])
+        # Each move, from the bead's status at that point, with what bd must show after it.
+        moves = [
+            ("open", "in_progress", {}, lambda s: s["status"] == "in_progress" and s.get("assignee")),
+            ("in_progress", "closed", {"reason": "-Done: a reason that starts with a dash"},
+             lambda s: s["status"] == "closed" and s.get("close_reason") == "-Done: a reason that starts with a dash" and reviewed(s)),
+            ("closed", "in_progress", {}, lambda s: s["status"] == "in_progress" and not reviewed(s) and s.get("assignee")),
+            ("in_progress", "deferred", {"until": "+2w", "why": "waits on the API key"},
+             lambda s: s["status"] == "deferred" and s.get("defer_until") and not s.get("assignee")
+             and s["notes"].endswith(f"{today}: Deferred: waits on the API key")),
+            ("deferred", "open", {}, lambda s: s["status"] == "open" and not s.get("defer_until")),
+            ("open", "deferred", {}, lambda s: s["status"] == "deferred" and not s.get("defer_until")),
+            ("deferred", "closed", {"reason": "Not needed"}, lambda s: s["status"] == "closed" and reviewed(s)),
+            ("closed", "open", {}, lambda s: s["status"] == "open" and not reviewed(s) and not s.get("close_reason")),
+        ]
+        wrong = []
+        for current, target, values, ok in moves:
+            bm.set_status(bid, current, target, values, run)
+            s = show(bid)
+            if not ok(s):
+                wrong.append(f"{current} -> {target}: {({k: s.get(k) for k in ('status', 'assignee', 'defer_until', 'labels')})}")
+        check(not wrong, "bd: set_status makes all eight moves, with labels, claims and return dates right"
+              + "".join(f"\n     {w}" for w in wrong))
         try:
-            bm.defer_bead(bid, "notadate", "", run)
+            bm.set_status(bid, "open", "deferred", {"until": "notadate"}, run)
             refused = False
         except subprocess.CalledProcessError as e:
             refused = "invalid --until" in e.stderr
-        check(refused, "bd: a date bd cannot read fails with bd's own message")
+        check(refused and show(bid)["status"] == "open", "bd: a date bd cannot read fails with bd's own message and leaves the bead open")
 
 
 async def check_refresh() -> None:
@@ -573,7 +575,7 @@ async def check_refresh() -> None:
 
 async def main() -> int:
     await check_synthetic()
-    await check_actions()
+    await check_status_menu()
     await check_refresh()
     if "--bd" in sys.argv:
         check_bd_scratch()

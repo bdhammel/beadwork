@@ -340,8 +340,8 @@ theme is open. The board's `n` key lists every open bead and every unreviewed re
 a `Needs from Ben:` bullet, each in its own list. A deferred bead parks its question, so `n`
 never lists it. The board shows each bullet in the bead's detail. A closed bead counts as
 awaiting review until
-Ben adds the `reviewed` label with the board's `m` key, or closes the bead himself with its
-Shift-C key, so never add that label yourself.
+Ben adds the `reviewed` label with the board's `m` key, or closes the bead himself from its
+status menu, so never add that label yourself.
 
 ## Templates
 

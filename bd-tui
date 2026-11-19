@@ -24,10 +24,10 @@ Keys never use Ctrl-h, Ctrl-j, Ctrl-k or Ctrl-l, because vim-tmux-navigator move
 panes with them. m marks a closed result reviewed and m again undoes it. Only Ben presses m,
 because the rules reserve the reviewed label for him.
 
-Shift-C closes the selected bead with a one-line result and marks the result reviewed, because
-Ben wrote it, and on a closed bead Shift-C reopens it. Shift-D defers the bead, until a date
-when one is given, and on a deferred bead Shift-D undefers it. Each key asks in a prompt first,
-and Esc cancels it. When a bead leaves the list, the cursor moves to the bead after it.
+Shift-S opens a menu that moves the selected bead to open, in progress, deferred or closed.
+Closed asks for the result in one line and marks it reviewed, because Ben wrote it. Deferred
+asks for an optional date and reason, and open and in progress act at once. Esc cancels the
+menu and its prompt. When a bead leaves the list, the cursor moves to the bead after it.
 
 Text is plain weight by default. Bold marks only a bead's title and the section headings, and
 colour carries status, so a narrow pane still reads at a glance.
@@ -51,7 +51,8 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static, Tree
+from textual.widgets import Input, OptionList, Static, Tree
+from textual.widgets.option_list import Option
 from textual.widgets.tree import TreeNode
 
 import bead_model as bm
@@ -87,24 +88,39 @@ SCOPES = {"open": ("o", "Open", lambda b: b["status"] not in ("closed", "deferre
 FILTERS = [("now", "n", bm.needs_ben_now), ("unreviewed", "v", lambda b: b["awaiting"]),
            ("P0", "p", lambda b: b.get("priority") == 0)]
 # The other keys, in short words so that they fit one line of Ben's 95-column pane. The README spells each key out.
-# j, k, h and l are left out because the arrow keys move and fold too, and q is left out because it quits as in a pager.
-KEYS = [("g", "thread"), ("⏎", "nvim"), ("m", "reviewed"), ("C", "close"), ("D", "defer"), ("s", "session"),
-        ("a", "attach"), ("r", "reload")]
-# What Shift-C and Shift-D do to the selected bead, picked by its status, as act -> (the key, the word for the
-# Enter hint, the prompt's lead line, the fields as (name, label, placeholder, required)).
-ACTS = {
-    "close": ("C", "closes", "Close {id}. The text becomes the bead's result, so say what was done or why the bead stops. "
-              "The result counts as reviewed, because you wrote it.",
-              [("reason", "Result", "what was done, or why the bead stops", True)]),
-    "reopen": ("C", "reopens", "Reopen {id}. bd clears its result, and its next result waits for your review again.",
-               [("why", "Why", "optional, kept as a dated note", False)]),
-    "defer": ("D", "defers", "Defer {id}. It leaves the open list until the date you give, or until you undefer it "
-              "with D when you give none.",
-              [("until", "Until", "optional: 2026-12-01, +2w or next monday", False),
-               ("why", "Why", "optional, kept as a dated note: what brings it back", False)]),
-    "undefer": ("D", "undefers", "Undefer {id}. It returns to the open list.",
-                [("why", "Why", "optional, kept as a dated note", False)]),
+# j, k, h and l are left out because the arrow keys move and fold too.
+KEYS = [("g", "thread"), ("⏎", "nvim"), ("m", "reviewed"), ("S", "status"), ("s", "session"), ("a", "attach"),
+        ("r", "reload"), ("q", "quit")]
+# The status menu's rows, in bead_model.STATUSES order, as bd status -> (the key that picks it, its name in the menu).
+MENU = {"open": ("o", "open"), "in_progress": ("w", "in progress"), "deferred": ("d", "deferred"), "closed": ("c", "closed")}
+# The statuses that ask for text before they act, as status -> (the word for the Enter hint, the prompt's lead line,
+# the fields as (name, label, placeholder, required)). Open and in progress act as soon as the menu picks them.
+FORMS = {
+    "closed": ("closes", "Close {id}. The text becomes the bead's result, so say what was done or why the bead stops. "
+               "The result counts as reviewed, because you wrote it.",
+               [("reason", "Result", "what was done, or why the bead stops", True)]),
+    "deferred": ("defers", "Defer {id}. It leaves the open list until the date you give, or, with no date, until you "
+                 "move it with S.",
+                 [("until", "Until", "optional: 2026-12-01, +2w or next monday", False),
+                  ("why", "Why", "optional, kept as a dated note: what brings it back", False)]),
 }
+
+
+def menu_hint(current: str, target: str, open_kids: int) -> str:
+    """What picking a status in the menu does to a bead in its current status, in a few words."""
+    if target == current:
+        return "current"
+    if target == "closed":
+        return (f"bd closes it only after its {open_kids} open child beads" if open_kids
+                else "asks for the result, which counts as reviewed")
+    if target == "deferred":
+        return "asks for a date and what brings it back"
+    first = {"closed": "reopens it", "deferred": "undefers it"}.get(current)
+    if target == "in_progress":
+        return f"{first} and claims it" if first else "claims it, so the board shows it working"
+    if current == "closed":
+        return "reopens it, and its next result waits for review"
+    return first or "releases the claim"
 
 
 def short(bead_id: str, epic: str | None) -> str:
@@ -283,8 +299,66 @@ class AskScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class MenuList(OptionList):
+    """The status menu's list, moved with j and k as well as the arrows, like the tree."""
+
+    BINDINGS = [Binding("j", "cursor_down", show=False), Binding("k", "cursor_up", show=False)]
+
+
+class StatusScreen(ModalScreen[str | None]):
+    """The menu that Shift-S opens: the four statuses the board reads, with the bead's current status marked.
+
+    A row's letter, or the arrows and Enter, picks a status. The current status is greyed out, and so is closed
+    while the bead has open children, because bd closes a bead only after its children.
+    """
+
+    DEFAULT_CSS = """
+    StatusScreen { align: center middle; }
+    StatusScreen > Vertical { width: 90%; max-width: 80; height: auto; border: round $accent; padding: 0 1; background: $panel; }
+    StatusScreen MenuList { height: auto; margin-top: 1; border: none; background: $panel; }
+    StatusScreen .hint { margin-top: 1; color: $text-muted; }
+    """
+    BINDINGS = [Binding("escape", "cancel", show=False),
+                *[Binding(key, f"pick('{status}')", show=False) for status, (key, _) in MENU.items()]]
+
+    def __init__(self, bead_id: str, title: str, current: str, open_kids: int) -> None:
+        super().__init__()
+        self.bead_id, self.title_line, self.current, self.open_kids = bead_id, title, current, open_kids
+
+    def compose(self) -> ComposeResult:
+        rows = []
+        for status in bm.STATUSES:
+            key, name = MENU[status]
+            off = status == self.current or (status == "closed" and self.open_kids > 0)
+            hint = menu_hint(self.current, status, self.open_kids)
+            line = f"{'●' if status == self.current else ' '} {key}  {name:<12} {hint}"
+            # A greyed-out row stays unstyled, so that the list's disabled colour reaches every word of it.
+            rows.append(Option(line if off else Text.assemble(line[:2], (key, "bold " + ID), f"  {name:<12} ",
+                                                              (hint, MUTED)), id=status, disabled=off))
+        with Vertical():
+            yield Static(Text.assemble(("Status of ", "bold"), (self.bead_id, "bold " + ID), " · " + self.title_line))
+            yield MenuList(*rows, id="status-menu")
+            yield Static("A letter, or ↑↓ and Enter, picks a status. Esc cancels.", classes="hint")
+
+    def on_mount(self) -> None:
+        menu = self.query_one(MenuList)
+        menu.highlighted = next((i for i, s in enumerate(bm.STATUSES) if not menu.get_option(s).disabled), None)
+        menu.focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        self.dismiss(event.option.id)
+
+    def action_pick(self, status: str) -> None:
+        if not self.query_one(MenuList).get_option(status).disabled:
+            self.dismiss(status)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class ActScreen(ModalScreen[dict | None]):
-    """The prompt for Shift-C and Shift-D: what the key will do, then one or two one-line fields.
+    """The prompt that closed and deferred open from the status menu: what will happen, then one or two fields.
 
     Enter moves to the next field and acts from the last one. An empty required field keeps the prompt
     open with a note under it, so nothing typed is lost.
@@ -298,10 +372,10 @@ class ActScreen(ModalScreen[dict | None]):
     """
     BINDINGS = [Binding("escape", "cancel", show=False)]
 
-    def __init__(self, act: str, bead_id: str, title: str, values: dict) -> None:
+    def __init__(self, target: str, bead_id: str, title: str, values: dict) -> None:
         super().__init__()
-        self.act, self.bead_id, self.title_line, self.values = act, bead_id, title, values
-        _, self.word, self.lead, self.fields = ACTS[act]
+        self.target, self.bead_id, self.title_line, self.values = target, bead_id, title, values
+        self.word, self.lead, self.fields = FORMS[target]
 
     def compose(self) -> ComposeResult:
         last = "on the last field " if len(self.fields) > 1 else ""
@@ -358,8 +432,7 @@ class BeadBoard(App):
         Binding("escape", "clear_search", show=False),
         Binding("r", "reload", show=False),
         Binding("m", "mark_reviewed", show=False),
-        Binding("C", "act('C')", show=False),
-        Binding("D", "act('D')", show=False),
+        Binding("S", "status", show=False),
         Binding("s", "start_session", show=False),
         Binding("a", "attach", show=False),
         Binding("q", "quit", show=False),
@@ -935,64 +1008,53 @@ class BeadBoard(App):
         self.call_from_thread(self.notify, done)
         self.call_from_thread(self.action_reload)
 
-    def action_act(self, key: str) -> None:
-        """Shift-C or Shift-D on a bead row: pick the act from the bead's status, then ask for its fields.
+    def action_status(self) -> None:
+        """Shift-S on a bead row: the status menu, then the prompt that the chosen status needs.
 
-        C closes an open or deferred bead and reopens a closed one. D defers an open bead and undefers a
-        deferred one. The bead id is fixed here, because a reread can rebuild the tree while the prompt is open.
+        The bead id and its status are fixed here, because a reread can rebuild the tree while the menu is open.
         """
         data = self.selected()
         if not data or data[0] != "bead":
-            self.notify(f"{key} acts on a bead row. Move the cursor to a bead.")
+            self.notify("S changes a bead's status. Move the cursor to a bead.")
             return
         b = self.beads[data[1]]
-        bid, status = b["id"], b["status"]
-        if key == "C":
-            act = "reopen" if status == "closed" else "close"
-        elif status == "closed":
-            self.notify(f"{bid} is closed, so D cannot defer it. C reopens it.")
-            return
-        else:
-            act = "undefer" if status == "deferred" else "defer"
-        if act == "close":
-            kids = [i for i in bm.descendants(self.beads, bid) if self.beads[i]["status"] != "closed"]
-            if kids:
-                self.notify(f"{bid} has {len(kids)} open child beads, and bd closes a bead only after its children.")
-                return
+        bid, current, title = b["id"], b["status"], b.get("title") or ""
+        open_kids = sum(1 for i in bm.descendants(self.beads, bid) if self.beads[i]["status"] != "closed")
 
-        def run(values: dict | None) -> None:
+        def filled(target: str, values: dict | None) -> None:
             if values is not None:
-                self.act(act, bid, values)
+                self.move(bid, current, target, values)
 
-        self.push_screen(ActScreen(act, bid, b.get("title") or "", self.drafts.get((act, bid), {})), run)
+        def chosen(target: str | None) -> None:
+            if target in FORMS:
+                self.push_screen(ActScreen(target, bid, title, self.drafts.get((target, bid), {})),
+                                 lambda values: filled(target, values))
+            elif target:
+                self.move(bid, current, target, {})
 
-    @work(thread=True, group="act")
-    def act(self, act: str, bid: str, values: dict) -> None:
-        write = {"close": lambda: bm.close_bead(bid, values["reason"], self.run_bd),
-                 "reopen": lambda: bm.reopen_bead(bid, values["why"], self.run_bd),
-                 "defer": lambda: bm.defer_bead(bid, values["until"], values["why"], self.run_bd),
-                 "undefer": lambda: bm.undefer_bead(bid, values["why"], self.run_bd)}[act]
+        self.push_screen(StatusScreen(bid, title, current, open_kids), chosen)
+
+    @work(thread=True, group="status")
+    def move(self, bid: str, current: str, target: str, values: dict) -> None:
         try:
-            write()
+            bm.set_status(bid, current, target, values, self.run_bd)
         except (ValueError, subprocess.SubprocessError, OSError) as e:
             msg = (getattr(e, "stderr", "") or str(e)).strip()
-            self.call_from_thread(self.act_failed, act, bid, values, msg)
+            self.call_from_thread(self.move_failed, bid, target, values, msg)
             return
-        self.call_from_thread(self.act_done, act, bid)
+        self.call_from_thread(self.move_done, bid, target)
 
-    def act_failed(self, act: str, bid: str, values: dict, msg: str) -> None:
-        """Keep what Ben typed, so that the same key on the same bead opens the prompt with it."""
-        self.drafts[(act, bid)] = values
-        self.notify(f"bd {act} {bid} failed: {msg}\n{ACTS[act][0]} again brings back what you typed.",
-                    severity="error", timeout=15)
+    def move_failed(self, bid: str, target: str, values: dict, msg: str) -> None:
+        """Keep what Ben typed, so that picking the same status for the same bead opens the prompt with it."""
+        if values:
+            self.drafts[(target, bid)] = values
+        again = "\nS and the same status bring back what you typed." if values else ""
+        self.notify(f"bd could not move {bid} to {MENU[target][1]}: {msg}{again}", severity="error", timeout=15)
         self.action_reload()
 
-    def act_done(self, act: str, bid: str) -> None:
-        self.drafts.pop((act, bid), None)
-        self.notify({"close": f"{bid} closed and marked reviewed · C on it in the closed list reopens it",
-                     "reopen": f"{bid} reopened · C again closes it",
-                     "defer": f"{bid} deferred · d lists it, and D there undefers it",
-                     "undefer": f"{bid} is open again · D again defers it"}[act])
+    def move_done(self, bid: str, target: str) -> None:
+        self.drafts.pop((target, bid), None)
+        self.notify(f"{bid} is {MENU[target][1]}" + (" and its result counts as reviewed" if target == "closed" else ""))
         self.action_reload()
 
     def action_start_session(self) -> None:
