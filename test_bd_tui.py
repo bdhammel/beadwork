@@ -221,9 +221,12 @@ async def check_synthetic() -> None:
         await pilot.press("g")
 
         # An epic row measures its P0 beads: under ent-aaa, .1 is in progress, .4 ready and .9 blocked, so 0 of 3 are done.
+        # Then closed of all its beads but the deferred .11: .5 and .6 of ten, so open beads below P0 show too.
         rows = {n.data[1]: n.label.plain for n in app.walk(tree.root) if n.data and n.data[0] == "epic" and n.data[1]}
-        check("▒▒▒░░░░░░░ 0/3" in rows["ent-aaa"] and "no P0 beads" in rows["ent-bbb"],
-              f"an epic row's bar and count measure its P0 beads, as done █, in progress ▒ and other ░: {rows['ent-aaa'][-24:]!r}")
+        check("▒▒▒░░░░░░░ 0/3 · 2/10" in rows["ent-aaa"] and "no P0 beads · 0/1" in rows["ent-bbb"]
+              and "2/10 closed" in plain(app.epic_text("ent-aaa")) and "1 deferred" in plain(app.epic_text("ent-aaa")),
+              f"an epic row shows a P0 bar (done █, in progress ▒, other ░) and count, then closed of every bead not deferred, "
+              f"as its detail does: {rows['ent-aaa'][-30:]!r}")
         check(tui.split_cells([19, 0, 1]) == [9, 0, 1] and tui.split_cells([1, 1, 7]) == [1, 1, 8]
               and tui.split_cells([3, 0, 0]) == [10, 0, 0],
               "a P0 bead still open never rounds the bar up to full, and one bead in progress always gets a cell")

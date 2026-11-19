@@ -627,15 +627,23 @@ class BeadBoard(App):
         t = Text()
         t.append(epic, style=ID)
         t.append(" " + fit(e.get("title") or "", max(0, width - len(epic) - 1)) + " ")
-        if not p0:
+        if p0:
+            done = sum(1 for i in p0 if self.beads[i]["bucket"] == "closed")
+            prog = sum(1 for i in p0 if self.beads[i]["bucket"] == "prog")
+            for (glyph, style), cells in zip(BAR, split_cells([done, prog, len(p0) - done - prog])):
+                t.append(glyph * cells, style=style)
+            t.append(f" {done}/{len(p0)}", style=MUTED)
+        else:
             t.append("no P0 beads", style=MUTED)
-            return t + self.counts(ids)
-        done = sum(1 for i in p0 if self.beads[i]["bucket"] == "closed")
-        prog = sum(1 for i in p0 if self.beads[i]["bucket"] == "prog")
-        for (glyph, style), cells in zip(BAR, split_cells([done, prog, len(p0) - done - prog])):
-            t.append(glyph * cells, style=style)
-        t.append(f" {done}/{len(p0)}", style=MUTED)
+        # Then closed of every bead that is not deferred, so a P1-or-lower bead still open shows after a full P0 bar.
+        live = self.live_beads(epic)
+        t.append(f" · {sum(1 for i in live if self.beads[i]['status'] == 'closed')}/{len(live)}", style=MUTED)
         return t + self.counts(ids)
+
+    def live_beads(self, epic: str) -> list[str]:
+        """The beads under an epic that count toward its progress: every one but a nested epic or a deferred bead."""
+        return [i for i in bm.descendants(self.beads, epic)
+                if self.beads[i].get("issue_type") != "epic" and self.beads[i]["status"] != "deferred"]
 
     def p0_beads(self, epic: str) -> list[str]:
         """An epic's P0 beads, the ones its MVP needs, with any nested epic left out."""
@@ -662,9 +670,10 @@ class BeadBoard(App):
         # The bead rows Ben can see, in order, so that a bead that leaves the list hands the cursor to the bead after it.
         seen = [n.data[1] for n in self.walk(tree.root)
                 if n.data and n.data[0] == "bead" and all(p.is_expanded for p in self.ancestors(n))]
-        # The tree's guides, marks, id and priority take about 22 columns of a bead row and 32 of an epic row.
+        # The tree's guides, marks, id and priority take about 22 columns of a bead row, and the guides, bar, two counts
+        # and marks take about 40 of an epic row.
         pane = tree.size.width or self.size.width
-        bead_w, epic_w = max(12, min(100, pane - 22)), max(12, min(90, pane - 32))
+        bead_w, epic_w = max(12, min(100, pane - 22)), max(12, min(90, pane - 40))
         groups = self.groups()
         # The first tree, and a list from o, d or c whose areas are all folded, open the busiest area and its epics.
         if groups and (self.expanded is None or (self.open_busiest and not any(f"a:{a}" in self.expanded for a, _ in groups))):
@@ -863,15 +872,17 @@ class BeadBoard(App):
         return joined(words + ([("one-shot", "#89b4fa")] if b["oneshot"] else []))
 
     def epic_text(self, epic: str) -> Group:
-        e, kids = self.beads[epic], bm.descendants(self.beads, epic)
+        e, kids = self.beads[epic], self.live_beads(epic)
         n = {k: sum(1 for i in kids if self.beads[i]["bucket"] == k) for k in bm.RANK}
         you = sum(1 for i in kids if self.needs_you(i))
+        parked = sum(1 for i in bm.descendants(self.beads, epic)
+                     if self.beads[i].get("issue_type") != "epic" and self.beads[i]["status"] == "deferred")
         parts: list[RenderableType] = [
             self.status_line(epic, [("epic", MUTED), (STATUS_WORD[e["bucket"]], STATUS_STYLE[e["bucket"]])]),
             Text(e.get("title") or "", style="bold"),
             joined([(f"{n['closed']}/{len(kids)} closed", MUTED), (f"{n['prog']} working", STATUS_STYLE["prog"]),
                     (f"{you} need you", NEEDS_STYLE if you else MUTED), (f"{n['ready']} ready", MUTED),
-                    (f"{n['blocked']} blocked", WARM if n["blocked"] else MUTED)]),
+                    (f"{n['blocked']} blocked", WARM if n["blocked"] else MUTED), (f"{parked} deferred", MUTED)]),
             Text(""), self.done_when(e["checks"], "Goal"), Text("")]
         p0 = self.p0_beads(epic)
         left = [i for i in bm.thread_order(self.beads, epic) if i in p0]

@@ -136,6 +136,7 @@ line, or a `ben:` or `kind:` label.
 | A `## If skipped` section with `Goal date:`, `Goal result:`, `Worst case:` and `Priority:` lines | Opens the detail pane |
 | A priority from P0 to P3, which the `Priority:` line in `## If skipped` justifies | Sets what `p` keeps, and is flagged when it disagrees with the goal lines on P0 |
 | The P0 beads under an epic, the ones its MVP needs | Fill the epic row's bar, `█` done, `▒` in progress and `░` the rest, with the count closed of total. The epic's detail lists the P0 beads still open, in dependency order |
+| Every bead under an epic that is not deferred | Gives the epic row's second count, closed of total after a `·`, such as `9/9 · 28/29`, so a P1-or-lower bead still open shows after a full P0 bar |
 | A `mode:ultrathink` or `mode:ultracode` label | Starts the bead's session with that keyword |
 | Notes that start with a `YYYY-MM-DD:` date | Shows the newest as the Latest note |
 | Acceptance lines, with `[x]` on a finished one | Shows the Done when checklist |
