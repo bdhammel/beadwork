@@ -69,7 +69,9 @@ STATUS_STYLE = {"prog": "#89b4fa", "ready": "", "blocked": WARM, "deferred": MUT
 NEEDS_STYLE = "bold #f9e2af"
 REVIEW_STYLE = "#cba6f7"
 SESSION_STYLE = {"working": "#a6e3a1", "blocked": "#f9e2af", "done": MUTED}
-BAR_STYLE = {"closed": "#a6e3a1", "prog": "#89b4fa", "blocked": WARM}
+# An epic's P0 bar: done, in progress and the rest. Each part has its own glyph as well as its colour, because the tree
+# cursor paints its row in one colour, which would merge parts told apart by colour alone.
+BAR = [("█", "#a6e3a1"), ("▒", "#89b4fa"), ("░", MUTED)]
 STATUS_MARK = {"prog": "◐", "ready": " ", "blocked": "⊘", "deferred": "◌", "closed": "✓"}
 STATUS_WORD = {"prog": "working", "ready": "ready", "blocked": "blocked", "deferred": "deferred", "closed": "closed"}
 NO_AREA = "no area"
@@ -140,6 +142,23 @@ def local_date(stamp: str | None) -> str:
         return datetime.fromisoformat(stamp).astimezone().strftime("%Y-%m-%d")
     except ValueError:
         return stamp[:10]
+
+
+def split_cells(counts: list[int], width: int = 10) -> list[int]:
+    """Width cells split over counts in proportion, where every count above zero gets at least one cell.
+
+    So a bar whose last P0 bead is still open never rounds up to full, and one bead in progress never rounds to nothing.
+    """
+    total = sum(counts)
+    if not total:
+        return [0] * len(counts)
+    cells = [max(1, round(width * c / total)) if c else 0 for c in counts]
+    while sum(cells) > width:
+        cells[cells.index(max(cells))] -= 1
+    while sum(cells) < width:
+        short_by = [width * c / total - n for c, n in zip(counts, cells)]
+        cells[short_by.index(max(short_by))] += 1
+    return cells
 
 
 def fit(text: str, width: int) -> str:
@@ -604,17 +623,24 @@ class BeadBoard(App):
     def epic_label(self, epic: str | None, ids: list[str], width: int) -> Text:
         if epic is None:
             return Text("No epic") + self.counts(ids)
-        e, kids = self.beads[epic], bm.descendants(self.beads, epic)
-        n = {k: sum(1 for i in kids if self.beads[i]["bucket"] == k) for k in BAR_STYLE}
+        e, p0 = self.beads[epic], self.p0_beads(epic)
         t = Text()
         t.append(epic, style=ID)
         t.append(" " + fit(e.get("title") or "", max(0, width - len(epic) - 1)) + " ")
-        cells = {k: round(10 * v / len(kids)) if kids else 0 for k, v in n.items()}
-        for k, c in cells.items():
-            t.append("█" * c, style=BAR_STYLE[k])
-        t.append("░" * max(0, 10 - sum(cells.values())), style=MUTED)
-        t.append(f" {n['closed']}/{len(kids)}", style=MUTED)
+        if not p0:
+            t.append("no P0 beads", style=MUTED)
+            return t + self.counts(ids)
+        done = sum(1 for i in p0 if self.beads[i]["bucket"] == "closed")
+        prog = sum(1 for i in p0 if self.beads[i]["bucket"] == "prog")
+        for (glyph, style), cells in zip(BAR, split_cells([done, prog, len(p0) - done - prog])):
+            t.append(glyph * cells, style=style)
+        t.append(f" {done}/{len(p0)}", style=MUTED)
         return t + self.counts(ids)
+
+    def p0_beads(self, epic: str) -> list[str]:
+        """An epic's P0 beads, the ones its MVP needs, with any nested epic left out."""
+        return [i for i in bm.descendants(self.beads, epic)
+                if self.beads[i].get("issue_type") != "epic" and self.beads[i].get("priority") == 0]
 
     def bead_label(self, bid: str, epic: str | None, width: int) -> Text:
         b = self.beads[bid]
@@ -847,6 +873,16 @@ class BeadBoard(App):
                     (f"{you} need you", NEEDS_STYLE if you else MUTED), (f"{n['ready']} ready", MUTED),
                     (f"{n['blocked']} blocked", WARM if n["blocked"] else MUTED)]),
             Text(""), self.done_when(e["checks"], "Goal"), Text("")]
+        p0 = self.p0_beads(epic)
+        left = [i for i in bm.thread_order(self.beads, epic) if i in p0]
+        head = Text("Open P0 beads", style=HEAD)
+        if not p0:
+            parts += [head, Text(" none, because the epic has no P0 bead", style=MUTED)]
+        elif not left:
+            parts += [head, Text(f" none, because all {len(p0)} P0 beads are closed", style=MUTED)]
+        else:
+            parts += [head + Text(f"  {len(left)} of {len(p0)}", style=MUTED), self.order_rows(epic, left)]
+        parts.append(Text(""))
         note = e["current"]
         parts.append(Text.assemble(("Latest ", HEAD), (note["date"] if note else "no dated note yet", MUTED)))
         if note:
@@ -862,14 +898,19 @@ class BeadBoard(App):
         if epic is None:
             return Text("This bead has no epic, so it has no thread.", style=MUTED)
         head = Text.assemble(("Thread ", HEAD), (epic, ID), " " + (self.beads[epic].get("title") or ""))
+        rows = self.order_rows(epic, bm.thread_order(self.beads, epic))
+        return Group(head, Text("Open beads in dependency order; g returns to the bead", style=MUTED), Text(""), rows)
+
+    def order_rows(self, epic: str, ids: list[str]) -> Table:
+        """One row per bead: its status mark, its short id, its title, and the open beads it waits on."""
         rows = grid()
-        for bid in bm.thread_order(self.beads, epic):
+        for bid in ids:
             b = self.beads[bid]
             waits = [short(x, epic) for x in b["blockers"] if self.beads[x]["status"] != "closed"]
             mark = Text.assemble((STATUS_MARK[b["bucket"]], STATUS_STYLE[b["bucket"]]), ("?" if b["needsYou"] else " ", NEEDS_STYLE))
             title = Text(b.get("title") or "") + (Text(f"  waits on {' '.join(waits)}", style=MUTED) if waits else Text(""))
             rows.add_row(mark, Text(short(bid, epic), style=ID), title)
-        return Group(head, Text("Open beads in dependency order; g returns to the bead", style=MUTED), Text(""), rows)
+        return rows
 
     # ---------- chrome ----------
 

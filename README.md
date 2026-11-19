@@ -135,6 +135,7 @@ line, or a `ben:` or `kind:` label.
 | A `needs:ben` label, a `Needs from Ben:` list in the newest dated note, or an open `kind:decision` bead | Marks the bead `?` and lists it |
 | A `## If skipped` section with `Goal date:`, `Goal result:`, `Worst case:` and `Priority:` lines | Opens the detail pane |
 | A priority from P0 to P3, which the `Priority:` line in `## If skipped` justifies | Sets what `p` keeps, and is flagged when it disagrees with the goal lines on P0 |
+| The P0 beads under an epic, the ones its MVP needs | Fill the epic row's bar, `█` done, `▒` in progress and `░` the rest, with the count closed of total. The epic's detail lists the P0 beads still open, in dependency order |
 | A `mode:ultrathink` or `mode:ultracode` label | Starts the bead's session with that keyword |
 | Notes that start with a `YYYY-MM-DD:` date | Shows the newest as the Latest note |
 | Acceptance lines, with `[x]` on a finished one | Shows the Done when checklist |
@@ -148,7 +149,7 @@ Run the checks from the repo directory. Expected: `all checks passed` and exit c
 
 ```bash
 cd ~/dev/beadwork
-./test_bd_tui.py          # 56 checks on a synthetic export, with a fake bd for the status menu
+./test_bd_tui.py          # 59 checks on a synthetic export, with a fake bd for the status menu
 ./test_bd_tui.py --live   # also checks the tree and renders every bead in your own export, read-only
 ./test_bd_tui.py --bd     # also moves a bead through every status change in a throwaway bd database
 ```

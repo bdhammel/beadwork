@@ -220,6 +220,18 @@ async def check_synthetic() -> None:
               "g shows the thread with each bead after the beads that block it")
         await pilot.press("g")
 
+        # An epic row measures its P0 beads: under ent-aaa, .1 is in progress, .4 ready and .9 blocked, so 0 of 3 are done.
+        rows = {n.data[1]: n.label.plain for n in app.walk(tree.root) if n.data and n.data[0] == "epic" and n.data[1]}
+        check("▒▒▒░░░░░░░ 0/3" in rows["ent-aaa"] and "no P0 beads" in rows["ent-bbb"],
+              f"an epic row's bar and count measure its P0 beads, as done █, in progress ▒ and other ░: {rows['ent-aaa'][-24:]!r}")
+        check(tui.split_cells([19, 0, 1]) == [9, 0, 1] and tui.split_cells([1, 1, 7]) == [1, 1, 8]
+              and tui.split_cells([3, 0, 0]) == [10, 0, 0],
+              "a P0 bead still open never rounds the bar up to full, and one bead in progress always gets a cell")
+        p0 = plain(app.epic_text("ent-aaa")).split("Open P0 beads", 1)[-1]
+        check(p0.startswith("  3 of 3") and p0.find(".1 ") < p0.find(".4 ") < p0.find(".9 ")
+              and re.search(r"\.9\s.*waits on \.1", p0) is not None,
+              "the epic detail lists its open P0 beads in dependency order, with what each waits on")
+
         # o, d and c pick a list; n, v and p only narrow it; the title counts every step.
         title = lambda: app.title_text.plain
         check("Open 10 · " in title() and "n now 8" in app.keys_text.plain and "p P0 3" in app.keys_text.plain,
