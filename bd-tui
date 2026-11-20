@@ -105,7 +105,7 @@ FILTERS = [("now", "n", bm.needs_ben_now), ("unreviewed", "v", lambda b: b["awai
            ("P0", "p", lambda b: b.get("priority") == 0)]
 # The label families that the Shift-L menu lists first, in this order, because they say how a session runs a bead.
 # The other families follow by name.
-LABEL_FAMILIES = ("ben", "wait", "mode", "kind", "needs")
+LABEL_FAMILIES = ("ben", "mode", "kind", "needs")
 # The other keys, in short words so that they fit one line of Ben's 95-column pane. The README spells each key out.
 # j, k, h and l are left out because the arrow keys move and fold too.
 KEYS = [("g", "thread"), ("⏎", "nvim"), ("m", "reviewed"), ("S", "status"), ("s", "session"), ("a", "attach"),
@@ -1058,7 +1058,6 @@ class BeadBoard(App):
         if b.get("issue_type") == "epic":
             return Text("epic", style=MUTED)
         run = [f"ben:{b['ben']}" if b["ben"] else "no ben: label"]
-        run += [f"wait:{b['wait']}"] if b["wait"] else []
         run += [f"mode:{b['mode']}"] if b["mode"] else []
         kind = f"kind:{b['kind']['name']}" + ("?" if b["kind"]["inferred"] else "")
         words = [(w, MUTED) for w in run + [kind]]

@@ -43,7 +43,7 @@ to the detail. That keeps the brief readable cold and keeps the detail complete.
 | Layer | Field | What to write | Writing rule it applies |
 |---|---|---|---|
 | Brief | Title | The outcome in plain words, as in the first habit | **Headings state the finding** |
-| Brief | `kind:<kind>` and run labels | One kind from the next table, a `ben:` label, and `wait:` or `mode:` when they apply | Lets Ben list beads by label with `bd list -l`, such as every one-shot he can launch tonight |
+| Brief | `kind:<kind>` and run labels | One kind from the next table, a `ben:` label, and a `mode:` label when one applies | Lets Ben list beads by label with `bd list -l`, such as every one-shot he can launch tonight |
 | Brief | `## Summary`, first in the description | One to three sentences: the problem in Ben's terms, what the bead changes, and what that unblocks or decides | **Thesis first**; **Give the reason as what the choice buys** |
 | Brief | Priority, and `## If skipped` directly after the summary | P0 to P3 from "Priority ranks a bead against its epic's MVP", and four fixed lines that justify it, as in "State what the goal loses if the bead is skipped" | **Give the reason as what the choice buys** |
 | Brief | `--acceptance` | The definition of done as one check, or one item per line when the theme carries several. For an experiment, the decision rule fixed before the run, such as "B ships if recall@10 beats the baseline by 0.05 or more" | **End an analysis on the decision** |
@@ -206,8 +206,8 @@ place that fits:
 Two guards stop a fold from costing more than the split it saves:
 
 - **The upper bound wins.** A finding joins a bead only if it lands in that bead's PR and
-  leaves its run labels unchanged. A finding that adds a second PR, raises the `ben:` level
-  or adds a `wait:` gets its own bead.
+  leaves its run labels unchanged. A finding that adds a second PR or raises the `ben:` level
+  gets its own bead.
 - **Never fold toward more Ben.** A finding that a command decides (`ben:none`) never joins a
   `ben:plan` or `ben:pair` bead, because the one-shot would then wait for an approval it does
   not need. When it needs that bead's outcome, add a blocks dependency instead.
@@ -219,9 +219,9 @@ sees that the definition of done grew after he read it.
 
 Beads carry run labels instead of an effort size, because writing code costs Claude about
 the same at any size. What changes how a bead is run is who decides that it is done, when
-Ben must be present, whether the session waits on compute, and whether the hard part is depth
-or breadth. Every bead except an epic or a `kind:decision` gate carries one `ben:` label. Add
-`wait:` and `mode:` only when they apply, because their absence is the default.
+Ben must be present, and whether the hard part is depth or breadth. Every bead except an epic
+or a `kind:decision` gate carries one `ben:` label. Add a `mode:` label only when one applies,
+because its absence is the default.
 
 | Label | Use it when | What the implementer does |
 |---|---|---|
@@ -229,23 +229,26 @@ or breadth. Every bead except an epic or a `kind:decision` gate carries one `ben
 | `ben:review` | Claude can finish alone, but the result is a reading that Ben must judge before anything builds on it, such as a diagnosis or an experiment's number | Runs unattended and closes with a result headline, which Ben reviews on the board |
 | `ben:plan` | A wrong approach wastes a GPU-day, touches a client deliverable, or meets a fork only Ben can choose | Writes the approach as a dated note, adds `needs:ben`, and stops before code or compute |
 | `ben:pair` | The context is in Ben's head, such as a client constraint, an unstated preference or a design worked out together | Runs only in a live session with Ben, never as a background job |
-| `wait:short` | The session blocks on something under about 30 minutes, such as CI, a dev job or a short eval | Stays in the session and waits with Monitor |
-| `wait:long` | The session blocks for hours, such as training, a prod job, a backfill or another person's review | Appends the run id or PR as a note before waiting, so that a fresh session can read the result; never runs two GPU beads at once on a shared GPU |
 | `mode:ultrathink` | The hard part is reasoning in one context, such as a cause nobody has found, a decision rule to design, or results to interpret | Starts the session with `ultrathink` |
 | `mode:ultracode` | The work splits into three or more independent parts, each a context's worth, such as many files or repos, a sweep or several review lenses | Starts the session with `ultracode` and runs a workflow; parts that share one GPU or one file gain nothing |
 
-A **one-shot** is a bead with `ben:none` and neither `wait:` nor `mode:`, and the board marks
-it one-shot in its labels line. A bead too large for one context is split, or marked `mode:ultracode`
+A **one-shot** is a bead with `ben:none` and no `mode:` label, and the board marks it one-shot
+in its labels line. A bead too large for one context is split, or marked `mode:ultracode`
 when its parts can run in parallel. A bead whose spec is unclear and that does not need Ben
 is written as a `kind:analysis` bead first, whose close reason becomes the spec.
+
+A wait on a job, such as CI, a dev build, training or a prod run, takes no label, because the
+session waits with Monitor whatever the job's length. Before a wait that can outlive the
+session, append the run id or the PR as a dated note, so that a fresh session can read the
+result. Never run two GPU jobs at once on a shared GPU. A wait on another person's action is a
+gate bead with a blocks link, as in "A bead is one theme that fits one context".
 
 | Bead | Run labels | Why |
 |---|---|---|
 | Two rows with the same timestamp sort the same way in either input order | `ben:none` | A unit test decides it, so it is a one-shot |
 | A missing value gets its own embedding bucket | `ben:plan` | A new bucket changes the vocabulary and invalidates trained checkpoints, which is Ben's call |
-| The new pipeline rebuilds a table row for row | `ben:none wait:short` | A row diff decides it, after a dev build |
-| The reranker gives the same decision across seeds | `ben:review wait:long mode:ultrathink` | The unstable early stopping needs a diagnosis, then a five-seed retrain, and the spread needs judging |
-| The next model trains on one of two label schemes | `ben:pair wait:long mode:ultrathink` | The scheme is Ben's choice, and training takes hours |
+| The reranker gives the same decision across seeds | `ben:review mode:ultrathink` | The unstable early stopping needs a diagnosis, then a five-seed retrain, and the spread needs judging |
+| The next model trains on one of two label schemes | `ben:pair mode:ultrathink` | The scheme is Ben's choice, and comparing the two schemes' results is the hard part |
 
 When unsure between two `ben:` values, pick the one that involves Ben more, because a bead
 that stalls on a missing decision costs more than a plan he approves in a minute.
@@ -288,7 +291,7 @@ epic=$(bd create "CSV export is async" -t epic -p 1 -l repo:<repo>,area:export \
 a=$(bd create "export_csv runs off the event loop, with route, tests and PR" --parent "$epic" -p 0 \
      -l kind:feature,ben:none --acceptance "make test exits 0 and the PR is open" --silent)
 b=$(bd create "Load-test the async export on dev" --parent "$epic" --deps "$a" -p 1 \
-     -l kind:experiment,ben:review,wait:short --acceptance "p95 export latency is reported for 1k, 10k and 100k rows" --silent)
+     -l kind:experiment,ben:review --acceptance "p95 export latency is reported for 1k, 10k and 100k rows" --silent)
 bd update "$a" --claim
 bd close "$a" --reason "PR <repo>#123 at 3f2c1ab; asyncio.to_thread offload; 202 + job id"
 ```
@@ -385,7 +388,7 @@ description to `${CLAUDE_JOB_DIR:-$TMPDIR}/bead-<slug>.md`, then file it:
 
 ```bash
 bd create "<outcome title>" -t task|bug|chore -p <0-3> \
-  -l repo:<repo>,kind:<kind>,ben:<none|review|plan|pair>[,wait:<short|long>][,mode:<ultrathink|ultracode>] \
+  -l repo:<repo>,kind:<kind>,ben:<none|review|plan|pair>[,mode:<ultrathink|ultracode>] \
   --acceptance "<runnable check>" \
   --body-file "${CLAUDE_JOB_DIR:-$TMPDIR}/bead-<slug>.md" --silent
 ```
@@ -414,8 +417,8 @@ such as "as of <repo> 3f2c1ab".>
 <One sentence: what "done" looks like.>
 
 ## How it runs
-**`ben:<value>`** because <who or what decides done>. <`wait:` and `mode:` with one reason
-each, or "One-shot.">
+**`ben:<value>`** because <who or what decides done>. <`mode:` with one reason, or
+"One-shot.">
 
 ## Location
 - `path/to/file.py` — `function_or_class`

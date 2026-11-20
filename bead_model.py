@@ -550,8 +550,8 @@ def enrich(rows: list[dict]) -> dict[str, dict]:
         b["isBlocked"] = b["status"] != "closed" and any(beads[x]["status"] != "closed" for x in b["blockers"])
         b["kind"] = kind_of(b)
         run = lambda k: next((l for l in b["labels"] if l.startswith(k + ":")), "")[len(k) + 1:]
-        b["ben"], b["wait"], b["mode"] = run("ben"), run("wait"), run("mode")
-        b["oneshot"] = b["ben"] == "none" and not b["wait"] and not b["mode"]
+        b["ben"], b["mode"] = run("ben"), run("mode")
+        b["oneshot"] = b["ben"] == "none" and not b["mode"]
         b.update(split_description(b.get("description") or ""))
         b["latest"] = latest_note(b.get("notes"))
         b["current"] = current_note(b.get("notes"))
