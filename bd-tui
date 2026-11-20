@@ -622,7 +622,14 @@ class BeadBoard(App):
             return
         self.call_from_thread(self.set_rows, rows)
 
+    def closing(self) -> bool:
+        """True once the board's widgets are gone, so that a reread or a session poll that lands while the board quits
+        changes nothing instead of raising."""
+        return not self.query("#title")
+
     def set_rows(self, rows: list[dict]) -> None:
+        if self.closing():
+            return
         self.read_at, self.error = time.time(), ""
         key = json.dumps(rows, sort_keys=True, default=str)
         if key == self.rows_key:
@@ -658,6 +665,8 @@ class BeadBoard(App):
         self.last_rows = now
 
     def set_error(self, msg: str) -> None:
+        if self.closing():
+            return
         self.error = msg
         self.render_title()
 
@@ -679,6 +688,8 @@ class BeadBoard(App):
         self.call_from_thread(self.set_sessions, live)
 
     def set_sessions(self, live: dict[str, str]) -> None:
+        if self.closing():
+            return
         if live != self.sessions:
             self.sessions = live
             self.rebuild()
