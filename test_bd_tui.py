@@ -191,14 +191,15 @@ async def check_synthetic() -> None:
         tree.move_cursor(nodes["ent-aaa.9"])
         await pilot.pause()
         body = plain(app.detail)
-        marks = ["ent-aaa.9 · blocked · needs you · P0", "If skipped", " date ", "slips: ent-aaa.4",
+        marks = ["ent-aaa.9 · blocked · needs you · P0", "ben:plan · kind:experiment", "Needs You", " ? ",
+                 "If skipped", " date ", "slips: ent-aaa.4",
                  " result ", " worst ", "fast small export reads as fast at every size", " priority ",
-                 "P0, because the load test waits on it", "ben:plan · kind:experiment",
+                 "P0, because the load test waits on it",
                  "Done when", "☐ three export sizes", "☑ p95 per size", "Thread ent-aaa · blocked by .1 · blocks –",
                  "Latest 2026-11-05", "Plan written"]
         where = [body.find(m) for m in marks]
         check(all(i >= 0 for i in where) and where == sorted(where),
-              "the detail runs: why listed, If skipped, labels, Done when, thread, latest note")
+              "the detail runs: why listed, run labels, Needs You, If skipped, Done when, thread, latest note")
         check("If skipped written" not in body, "the Latest line skips the bookkeeping note")
         b9 = app.beads["ent-aaa.9"]
         no_why = {**b9, "ifSkipped": {k: v for k, v in b9["ifSkipped"].items() if k != "why"}}

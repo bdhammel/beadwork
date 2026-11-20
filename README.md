@@ -133,7 +133,8 @@ line, or a `ben:` or `kind:` label.
 |---|---|
 | An `area:<name>` label on the epic | Groups the tree by area |
 | A `needs:ben` label, a `Needs from Ben:` list in the newest dated note, or an open `kind:decision` bead | Marks the bead `?` and lists it |
-| A `## If skipped` section with `Goal date:`, `Goal result:`, `Worst case:` and `Priority:` lines | Opens the detail pane |
+| The `ben:`, `wait:`, `mode:` and `kind:` labels | Shows them on one line under the bead's title, at the top of the detail pane, with `one-shot` when the bead is one |
+| A `## If skipped` section with `Goal date:`, `Goal result:`, `Worst case:` and `Priority:` lines | Shows the section after the run labels and any question for Ben |
 | A priority from P0 to P3, which the `Priority:` line in `## If skipped` justifies | Sets what `p` keeps, and is flagged when it disagrees with the goal lines on P0 |
 | The P0 beads under an epic, the ones its MVP needs | Fill the epic row's bar, `█` done, `▒` in progress and `░` the rest, with the count closed of total. The epic's detail lists the P0 beads still open, in dependency order |
 | Every bead under an epic that is not deferred | Gives the epic row's second count, closed of total after a `·`, such as `9/9 · 28/29`, so a P1-or-lower bead still open shows after a full P0 bar |

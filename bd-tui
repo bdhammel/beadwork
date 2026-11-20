@@ -9,8 +9,9 @@ The board runs in one tmux pane beside `claude agents`. Its tree opens on every 
 grouped by area and then by epic, with the busiest area unfolded. o, d and c pick the list of
 open, deferred or closed beads. n, v, p and / each narrow that list, and the title shows every
 step with the number of beads left, such as Open 127 › now 42 › P0 18. The detail pane below
-the tree leads with what the epic's goal loses if the bead is skipped. The fields come from
-bead_model.py, which also holds every bd and claude call the board makes.
+the tree opens on the bead's run labels and then on what the epic's goal loses if the bead is
+skipped. The fields come from bead_model.py, which also holds every bd and claude call the
+board makes.
 
   bd-tui                 open the board in this terminal
   bd-tui --window        inside tmux: open a window with claude agents on the left, bd-tui on the right
@@ -786,7 +787,7 @@ class BeadBoard(App):
         return joined([(bid, ID), *words, (f"P{self.beads[bid].get('priority', '')}", MUTED)])
 
     def bead_text(self, bid: str) -> Group:
-        """The approved order: why it is listed, If skipped, labels, Done when, thread, latest note, follow-ups."""
+        """The approved order: why it is listed, run labels, Needs You, If skipped, Done when, thread, latest note, follow-ups."""
         b, epic = self.beads[bid], bm.epic_of(self.beads, bid)
         until = local_date(b.get("defer_until")) if b["bucket"] == "deferred" else ""
         why = [(STATUS_WORD[b["bucket"]] + (f" until {until}" if until else ""), STATUS_STYLE[b["bucket"]])]
@@ -794,14 +795,16 @@ class BeadBoard(App):
         why += [("to review", REVIEW_STYLE)] if b["awaiting"] else []
         if self.sessions.get(bid):
             why.append((f"session {self.sessions[bid]}", SESSION_STYLE.get(self.sessions[bid], "")))
-        parts: list[RenderableType] = [self.status_line(bid, why), Text(b.get("title") or "", style="bold")]
+        # The run labels sit under the title, apart from it, because they say how a session runs the bead.
+        parts: list[RenderableType] = [self.status_line(bid, why), Text(b.get("title") or "", style="bold"),
+                                       Text(""), self.labels_line(b)]
         if b["needsYou"]:
             asks = grid()
             for a in b["asks"] or [{"text": "Decision bead, waiting on you" if b["kind"]["name"] == "decision"
                                     else "Marked needs:ben with no question in its notes"}]:
-                asks.add_row(Text("?", style=NEEDS_STYLE),
+                asks.add_row(Text(" ?", style=NEEDS_STYLE),
                              Text(a["text"]) + (Text(" (guessed from prose)", style=MUTED) if a.get("prose") else Text("")))
-            parts.append(asks)
+            parts += [Text(""), Text("Needs You", style=NEEDS_STYLE), asks]
         parts += [Text(""), Text("If skipped", style=HEAD)]
         s = b["ifSkipped"]
         if s:
@@ -819,7 +822,7 @@ class BeadBoard(App):
             parts.append(lines)
         else:
             parts.append(Text(" no ## If skipped section", style=MUTED))
-        parts += [Text(""), self.labels_line(b), Text(""), self.done_when(b["checks"], "Done when")]
+        parts += [Text(""), self.done_when(b["checks"], "Done when")]
         blockers = [x for x in b["blockers"] if self.beads[x]["status"] != "closed"]
         blocks = [x for x in b["blocks"] if self.beads[x]["status"] != "closed"]
         thread = Text.assemble(("Thread ", HEAD), (epic or "–", ID if epic else MUTED))
