@@ -127,6 +127,17 @@ without a key press, and the title bar shows the time of the last read. A reread
 change rebuilds the tree but keeps your cursor, your folds and your place in the detail pane.
 A reread that finds no change only updates the time.
 
+A reread also marks each bead or epic whose row changed with `Δ` before its id, and the title
+counts the marked beads across every list, such as `Δ 3 changed`. The count leaves epics out,
+like the title's other counts. The detail pane names what
+changed and when, such as `Δ changed 16:42: open → in progress, note`. A mark clears when the
+cursor leaves a row that the cursor reached after the change, so the detail pane keeps naming
+the change while you read. A change made under a cursor that nobody moved stays marked, because
+nobody saw the change. The first read marks nothing, and neither does a change you make with
+`m` or Shift-`S`. The marks ignore timestamps, counts and the heartbeat of a claim, because bd
+moves those without an edit anyone reads. A bead that another session closed leaves the open
+list, so its mark shows on the closed list, `c`.
+
 ## What the board reads from a bead
 
 The board reads these conventions from `rules/beads.md`. Its detail pane also marks a bead with
@@ -155,7 +166,7 @@ Run the checks from the repo directory. Expected: `all checks passed` and exit c
 
 ```bash
 cd ~/dev/beadwork
-./test_bd_tui.py          # 59 checks on a synthetic export, with a fake bd for the status menu
+./test_bd_tui.py          # 71 checks on a synthetic export, with a fake bd for the status menu
 ./test_bd_tui.py --live   # also checks the tree and renders every bead in your own export, read-only
 ./test_bd_tui.py --bd     # also moves a bead through every status change in a throwaway bd database
 ```

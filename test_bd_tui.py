@@ -331,8 +331,8 @@ async def check_synthetic() -> None:
         tree.move_cursor(bead_nodes(app)["ent-aaa.5"])
         await pilot.press("m")
         await settle(app, pilot)
-        check(calls[-1] == ("ent-aaa.5", False) and app.beads["ent-aaa.5"]["awaiting"],
-              "m on a reviewed result removes the label again")
+        check(calls[-1] == ("ent-aaa.5", False) and app.beads["ent-aaa.5"]["awaiting"] and not app.marks,
+              "m on a reviewed result removes the label again, and m marks no row as changed")
 
 
 async def check_label_picker() -> None:
@@ -379,6 +379,12 @@ async def check_label_picker() -> None:
         await settle(app, pilot)
         check(not isinstance(app.screen, tui.LabelScreen) and app.label_on == "" and set(bead_nodes(app)) == NOW,
               "Esc closes the menu and leaves the list as it was")
+        await pilot.press("L")
+        await pilot.pause()
+        await pilot.press("down", "ctrl+n", "ctrl+p", "enter")
+        await settle(app, pilot)
+        check(app.label_on == "kind:decision" and set(bead_nodes(app)) == {"ent-aaa.7"},
+              f"down and Ctrl-n move the menu and Ctrl-p moves it back, so Enter picks the second label: {app.label_on!r}")
 
 
 def fake_bd(rows: list[dict], calls: list) -> Callable[[list[str]], None]:
@@ -487,6 +493,7 @@ async def check_status_menu() -> None:
               and calls[2:] == [["update", "ent-aaa.4", "--claim"], ["update", "ent-aaa.4", "--status=open", "--assignee="]]
               and claimed == "in_progress" and app.beads["ent-aaa.4"]["status"] == "open",
               f"o reopens a closed bead without its review mark, Enter on the first row claims it, and o releases it: {calls}")
+        check(not app.marks, f"the status changes Ben makes from the board mark no row as changed: {sorted(app.marks)}")
 
         # j and k move the menu, and Enter on deferred opens the defer prompt. A failed defer keeps the text for the next try.
         calls.clear()
@@ -607,6 +614,38 @@ async def check_refresh() -> None:
         after = (tree.cursor_node.data, tree.scroll_y, detail.scroll_y)
         check(changed and before[1] > 0 and before[2] > 0 and after == before,
               f"a reread that changes another row rebuilds the tree, keeping the cursor and both scroll positions: {before} -> {after}")
+
+        mark = tui.CHANGE_MARK
+        check(set(app.marks) == {"ent-aaa.2"} and mark in bead_nodes(app)["ent-aaa.2"].label.plain
+              and f"{mark} 1 changed" in app.title_text.plain,
+              f"the reread marks only the renamed row, which the title counts, and the first read marked none: {sorted(app.marks)}")
+        tree.move_cursor(bead_nodes(app)["ent-aaa.2"])
+        await pilot.pause()
+        said = re.search(rf"{mark} changed \d\d:\d\d: title", plain(app.detail)) is not None
+        tree.move_cursor(bead_nodes(app)["ent-aaa.1"])
+        await pilot.pause()
+        check(said and not app.marks and mark not in bead_nodes(app)["ent-aaa.2"].label.plain
+              and "changed" not in app.title_text.plain,
+              "the detail names the changed field, and the mark clears when the cursor leaves the row")
+
+        tree.move_cursor(bead_nodes(app)["ent-aaa.4"])
+        await pilot.pause()
+        beat = "2026-11-19T10:00:00Z"
+        next(r for r in rows if r["id"] == "ent-aaa.4").update(status="in_progress", notes="2026-11-19: started", heartbeat_at=beat)
+        next(r for r in rows if r["id"] == "ent-aaa.1")["heartbeat_at"] = beat
+        marked = await until(pilot, lambda: "ent-aaa.4" in app.marks)
+        await pilot.pause()
+        said = f"{mark} changed" in plain(app.detail) and "open → in progress, note" in plain(app.detail)
+        tree.move_cursor(bead_nodes(app)["ent-aaa.1"])
+        await pilot.pause()
+        kept = set(app.marks) == {"ent-aaa.4"}
+        tree.move_cursor(bead_nodes(app)["ent-aaa.4"])
+        await pilot.pause()
+        tree.move_cursor(bead_nodes(app)["ent-aaa.1"])
+        await pilot.pause()
+        check(marked and said and kept and not app.marks,
+              "a change under the cursor shows the status move, stays marked after the cursor leaves, and clears after "
+              "the next visit; a heartbeat alone marks nothing")
 
         epic = next(n for n in app.walk(tree.root) if n.data and n.data[:2] == ("epic", "ent-aaa"))
         tree.move_cursor(epic)

@@ -20,7 +20,9 @@ board makes.
   bd-tui --refresh 120   reread the beads every 120 s instead of every 60 s; 0 rereads only on r
 
 The board rereads the beads every minute, so a bead that another session closes or claims
-moves without a key press. A reread that finds no change only updates the read time.
+moves without a key press. A reread that finds no change only updates the read time. A reread
+that changes a row marks the row with Δ until the cursor has visited the row and left it, and
+the detail pane names the fields that changed.
 
 Keys never use Ctrl-h, Ctrl-j, Ctrl-k or Ctrl-l, because vim-tmux-navigator moves between
 panes with them. m marks a closed result reviewed and m again undoes it. Only Ben presses m,
@@ -35,6 +37,7 @@ Text is plain weight by default. Bold marks only a bead's title and the section 
 colour carries status, so a narrow pane still reads at a glance.
 """
 import argparse
+import copy
 import json
 import os
 import re
@@ -76,6 +79,14 @@ SESSION_STYLE = {"working": "#a6e3a1", "blocked": "#f9e2af", "done": MUTED}
 # cursor paints its row in one colour, which would merge parts told apart by colour alone.
 BAR = [("█", "#a6e3a1"), ("▒", "#89b4fa"), ("░", MUTED)]
 STATUS_MARK = {"prog": "◐", "ready": " ", "blocked": "⊘", "deferred": "◌", "closed": "✓"}
+# The mark on a row that changed in a reread since Ben last had the cursor on it. It is a glyph as well as a colour,
+# for the same reason as the bar's glyphs.
+CHANGE_MARK, CHANGE_STYLE = "Δ", "#94e2d5"
+# How the detail pane names each changed field, in the order it lists them. A field not named here shows by its key.
+CHANGE_WORDS = {"new": "new bead", "status": "status", "priority": "priority", "assignee": "claim", "title": "title",
+                "labels": "labels", "notes": "note", "close_reason": "result", "description": "description",
+                "acceptance_criteria": "acceptance", "dependencies": "dependencies", "comments": "comment",
+                "comment_count": "comment", "defer_until": "defer date", "due_at": "due date", "owner": "owner"}
 STATUS_WORD = {"prog": "working", "ready": "ready", "blocked": "blocked", "deferred": "deferred", "closed": "closed"}
 NO_AREA = "no area"
 NOTE_LINES, NOTE_CHARS = 10, 700  # the Latest note stops at whichever comes first; Enter shows the rest
@@ -560,6 +571,13 @@ class BeadBoard(App):
         self.read_at = 0.0
         self.error = ""
         self.detail: RenderableType = Text("")  # what the detail pane shows, kept for the headless test
+        self.last_rows: dict[str, dict] | None = None  # the last export by id, as bd wrote it, to find what changed
+        # bead id -> its change mark: the read time of its latest change ("at"), the fields changed since Ben last
+        # looked ("fields"), and its row before the first of those changes ("was").
+        self.marks: dict[str, dict] = {}
+        self.own: set[str] = set()  # beads Ben is changing from the board, whose next change gets no mark
+        self.cursor_at: tuple[str | None, float] = (None, 0.0)  # the bead or epic under the cursor, and since when
+        self.row_labels: dict[str, tuple[TreeNode, Callable[[], Text]]] = {}  # id -> its tree row and how to draw it
 
     def compose(self) -> ComposeResult:
         yield Static(id="title")
@@ -610,9 +628,34 @@ class BeadBoard(App):
         if key == self.rows_key:
             self.render_title()
             return
+        self.note_changes(rows)
         self.rows_key, self.beads = key, bm.enrich(rows)
         self.rebuild()
         self.refresh_sessions()
+
+    def note_changes(self, rows: list[dict]) -> None:
+        """Mark each bead whose row differs from the last read, except a bead Ben just changed from the board.
+
+        The first read marks nothing, because every bead would be new. A bead that changes again while marked keeps
+        one mark, which collects the fields and moves to the latest read time.
+        """
+        now = {r["id"]: copy.deepcopy(r) for r in rows}
+        if self.last_rows is not None:
+            at = time.time()
+            for bid, row in now.items():
+                fields = bm.changed_fields(self.last_rows.get(bid), row)
+                if not fields:
+                    continue
+                if bid in self.own:
+                    self.own.discard(bid)
+                    self.marks.pop(bid, None)
+                    continue
+                mark = self.marks.setdefault(bid, {"fields": [], "was": self.last_rows.get(bid) or {}})
+                mark["at"] = at
+                mark["fields"] += [f for f in fields if f not in mark["fields"]]
+        for bid in [b for b in self.marks if b not in now]:
+            del self.marks[bid]
+        self.last_rows = now
 
     def set_error(self, msg: str) -> None:
         self.error = msg
@@ -708,8 +751,11 @@ class BeadBoard(App):
             return Text("No epic") + self.counts(ids)
         e, p0 = self.beads[epic], self.p0_beads(epic)
         t = Text()
+        marked = epic in self.marks
+        if marked:
+            t.append(CHANGE_MARK + " ", style=CHANGE_STYLE)
         t.append(epic, style=ID)
-        t.append(" " + fit(e.get("title") or "", max(0, width - len(epic) - 1)) + " ")
+        t.append(" " + fit(e.get("title") or "", max(0, width - len(epic) - 1 - 2 * marked)) + " ")
         if p0:
             done = sum(1 for i in p0 if self.beads[i]["bucket"] == "closed")
             prog = sum(1 for i in p0 if self.beads[i]["bucket"] == "prog")
@@ -741,7 +787,8 @@ class BeadBoard(App):
         t.append(STATUS_MARK[b["bucket"]], style=STATUS_STYLE[b["bucket"]])
         asks = bm.asks_ben_now(b)
         t.append("?" if asks else "◇" if b["awaiting"] else " ", style=NEEDS_STYLE if asks else REVIEW_STYLE)
-        t.append(" " + short(bid, epic).ljust(6) + " ", style=ID)
+        t.append(CHANGE_MARK if bid in self.marks else " ", style=CHANGE_STYLE)
+        t.append(short(bid, epic).ljust(6) + " ", style=ID)
         t.append(fit(b.get("title") or "", width))
         p = b.get("priority")
         t.append(f" P{p}", style="" if p == 0 else MUTED)
@@ -769,6 +816,7 @@ class BeadBoard(App):
         tree.clear()
         target: TreeNode | None = None
         leaves: dict[str, TreeNode] = {}
+        self.row_labels = {}
         for area, epics in groups:
             all_ids = [i for _, ids in epics for i in ids]
             an = tree.root.add(self.area_label(area, all_ids), data=("area", area),
@@ -778,8 +826,11 @@ class BeadBoard(App):
                             expand=searching or f"e:{area}/{epic}" in (self.expanded or set()))
                 if keep == en.data:
                     target = en
+                if epic:
+                    self.row_labels[epic] = (en, lambda e=epic, i=ids: self.epic_label(e, i, epic_w))
                 for bid in ids:
                     leaves[bid] = en.add_leaf(self.bead_label(bid, epic, bead_w), data=("bead", bid))
+                    self.row_labels[bid] = (leaves[bid], lambda b=bid, e=epic: self.bead_label(b, e, bead_w))
             if keep and keep[0] == "area" and keep[1] == area:
                 target = an
         if keep and keep[0] == "bead":
@@ -832,7 +883,30 @@ class BeadBoard(App):
         (self.expanded.add if expanded else self.expanded.discard)(key)
 
     def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        """Show the row's detail, and clear the change mark of the row the cursor left, if it changed before the cursor
+        reached it.
+
+        A mark stays while the cursor is on its row, so that the detail pane keeps saying what changed. A change made
+        under a cursor that nobody moved stays marked when the cursor leaves, because nobody saw it. A rebuild that puts
+        the cursor back on the same row changes nothing here.
+        """
+        data = event.node.data
+        here = data[1] if data and data[0] in ("bead", "epic") else None
+        left, since = self.cursor_at
+        if here != left:
+            mark = self.marks.get(left or "")
+            if mark and mark["at"] < since:
+                del self.marks[left]
+                self.relabel(left)
+                self.render_title()
+            self.cursor_at = (here, time.time())
         self.show_detail()
+
+    def relabel(self, rid: str) -> None:
+        """Redraw one tree row, such as after its change mark clears, without rebuilding the tree."""
+        if rid in self.row_labels:
+            node, draw = self.row_labels[rid]
+            node.set_label(draw())
 
     # ---------- detail ----------
 
@@ -879,6 +953,8 @@ class BeadBoard(App):
         why += [("to review", REVIEW_STYLE)] if b["awaiting"] else []
         if self.sessions.get(bid):
             why.append((f"session {self.sessions[bid]}", SESSION_STYLE.get(self.sessions[bid], "")))
+        if bid in self.marks:
+            why.append((self.change_text(bid), CHANGE_STYLE))
         # The run labels sit under the title, apart from it, because they say how a session runs the bead.
         parts: list[RenderableType] = [self.status_line(bid, why), Text(b.get("title") or "", style="bold"),
                                        Text(""), self.labels_line(b)]
@@ -933,6 +1009,25 @@ class BeadBoard(App):
             parts.append(Text(f"⚠ {' · '.join(b['flags'])}", style="#f9e2af"))
         return Group(*parts)
 
+    def change_text(self, rid: str) -> str:
+        """What changed in a marked row since Ben last looked, such as "Δ changed 16:42: open → closed, result"."""
+        mark, now = self.marks[rid], self.beads[rid]
+        was, order = mark["was"], list(CHANGE_WORDS)
+        words: list[str] = []
+        for field in sorted(mark["fields"], key=lambda f: order.index(f) if f in order else len(order)):
+            # A bead first marked new has no earlier row, so its status and priority show without a "from".
+            if field == "status" and was and was.get("status") != now["status"]:
+                name = lambda s: MENU.get(s, ("", s))[1]
+                word = f"{name(was.get('status'))} → {name(now['status'])}"
+            elif field == "priority" and was and was.get("priority") != now.get("priority"):
+                word = f"P{was.get('priority')} → P{now.get('priority')}"
+            else:
+                word = CHANGE_WORDS.get(field, field)
+            if word not in words:
+                words.append(word)
+        at = time.strftime("%H:%M", time.localtime(mark["at"]))
+        return f"{CHANGE_MARK} changed {at}: {', '.join(words)}"
+
     def done_when(self, checks: dict, heading: str) -> Group:
         head = Text.assemble((heading, HEAD), (f"  {checks['ticked']}/{checks['n']}" if checks["marked"] else "", MUTED))
         if not checks["items"]:
@@ -964,8 +1059,10 @@ class BeadBoard(App):
         you = sum(1 for i in kids if self.needs_you(i))
         parked = sum(1 for i in bm.descendants(self.beads, epic)
                      if self.beads[i].get("issue_type") != "epic" and self.beads[i]["status"] == "deferred")
+        words = [("epic", MUTED), (STATUS_WORD[e["bucket"]], STATUS_STYLE[e["bucket"]])]
+        words += [(self.change_text(epic), CHANGE_STYLE)] if epic in self.marks else []
         parts: list[RenderableType] = [
-            self.status_line(epic, [("epic", MUTED), (STATUS_WORD[e["bucket"]], STATUS_STYLE[e["bucket"]])]),
+            self.status_line(epic, words),
             Text(e.get("title") or "", style="bold"),
             joined([(f"{n['closed']}/{len(kids)} closed", MUTED), (f"{n['prog']} working", STATUS_STYLE["prog"]),
                     (f"{you} need you", NEEDS_STYLE if you else MUTED), (f"{n['ready']} ready", MUTED),
@@ -1021,6 +1118,12 @@ class BeadBoard(App):
         working = sum(1 for b in beads if b["status"] == "in_progress")
         you = sum(1 for b in beads if bm.asks_ben_now(b))
         parts = [(f"{working} working", STATUS_STYLE["prog"]), (f"{you} need you", NEEDS_STYLE)]
+        # Like the need-you count, the changed count spans every list, so it counts a bead that another session
+        # closed, which only c lists. It leaves epics out, like the other counts, because a nested epic or one with no
+        # listed bead has no row, so its mark could never clear.
+        changed = sum(1 for i in self.marks if i in self.beads and self.beads[i].get("issue_type") != "epic")
+        if changed:
+            parts.append((f"{CHANGE_MARK} {changed} changed", CHANGE_STYLE))
         if self.read_at:
             parts.append((f"read {time.strftime('%H:%M', time.localtime(self.read_at))}", MUTED))
         if self.error:
@@ -1162,7 +1265,19 @@ class BeadBoard(App):
         if b["status"] != "closed":
             self.notify(f"{b['id']} is open. m marks a closed result reviewed.")
             return
+        self.changing(b["id"])
         self.mark(b["id"], b["awaiting"])
+
+    def changing(self, bid: str) -> None:
+        """Before Ben changes a bead from the board: clear its mark, and keep the change he makes from marking it.
+
+        The bead is noted before the bd call, so that a timed reread that lands between the call and the board's own
+        reread still knows the change is his.
+        """
+        self.own.add(bid)
+        if self.marks.pop(bid, None):
+            self.relabel(bid)
+            self.render_title()
 
     @work(thread=True, group="review")
     def mark(self, bid: str, reviewed: bool) -> None:
@@ -1170,6 +1285,7 @@ class BeadBoard(App):
             self.set_reviewed(bid, reviewed)
         except (ValueError, subprocess.CalledProcessError, OSError) as e:
             msg = (getattr(e, "stderr", "") or str(e)).strip()
+            self.call_from_thread(self.own.discard, bid)
             self.call_from_thread(self.notify, f"bd label failed: {msg}", severity="error")
             return
         done = f"{bid} marked reviewed · m again undoes" if reviewed else f"{bid} is a result to review again"
@@ -1191,6 +1307,7 @@ class BeadBoard(App):
 
         def filled(target: str, values: dict | None) -> None:
             if values is not None:
+                self.changing(bid)
                 self.move(bid, current, target, values)
 
         def chosen(target: str | None) -> None:
@@ -1198,6 +1315,7 @@ class BeadBoard(App):
                 self.push_screen(ActScreen(target, bid, title, self.drafts.get((target, bid), {})),
                                  lambda values: filled(target, values))
             elif target:
+                self.changing(bid)
                 self.move(bid, current, target, {})
 
         self.push_screen(StatusScreen(bid, title, current, open_kids), chosen)
@@ -1214,6 +1332,7 @@ class BeadBoard(App):
 
     def move_failed(self, bid: str, target: str, values: dict, msg: str) -> None:
         """Keep what Ben typed, so that picking the same status for the same bead opens the prompt with it."""
+        self.own.discard(bid)
         if values:
             self.drafts[(target, bid)] = values
         again = "\nS and the same status bring back what you typed." if values else ""

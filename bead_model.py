@@ -508,6 +508,21 @@ def bucket(b: dict) -> str:
     return "blocked" if b["isBlocked"] else "ready"
 
 
+# The fields of an exported row that a change mark ignores, because bd moves them without an edit anyone reads:
+# timestamps, counts that follow other fields, and the heartbeat and lease of a claim. A new child changes only its
+# parent's dependent_count, so a new child leaves its parent unmarked.
+CHANGE_IGNORED = {"_type", "created_at", "created_by", "updated_at", "started_at", "closed_at", "heartbeat_at",
+                  "lease_expires_at", "dependency_count", "dependent_count"}
+
+
+def changed_fields(old: dict | None, new: dict) -> list[str]:
+    """The fields of a bead's exported row that differ between two reads, or ["new"] for a bead the first read lacked."""
+    if old is None:
+        return ["new"]
+    keys = list(new) + [k for k in old if k not in new]
+    return [k for k in keys if k not in CHANGE_IGNORED and old.get(k) != new.get(k)]
+
+
 def enrich(rows: list[dict]) -> dict[str, dict]:
     """Return every bead keyed by id, in export order, with the derived fields both boards read."""
     beads = {r["id"]: {**r, "children": [], "blockers": [], "blocks": [], "discovered": [], "sources": [],
