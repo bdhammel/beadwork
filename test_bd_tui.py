@@ -335,6 +335,52 @@ async def check_synthetic() -> None:
               "m on a reviewed result removes the label again")
 
 
+async def check_label_picker() -> None:
+    """Shift-L narrows the list to one label picked from a menu, whose counts match the list, and Shift-L removes it."""
+    app = tui.BeadBoard(load_rows=lambda: copy.deepcopy(ROWS), load_sessions=None, refresh_s=0)
+    async with app.run_test(size=(95, 40)) as pilot:
+        await settle(app, pilot)
+
+        def menu() -> list[tuple[str, str]]:
+            options = app.screen.query_one("#label-menu").options
+            return [(o.id, " ".join(str(o.prompt).split())) for o in options]
+
+        app.expanded = set()  # every area folded, so a pick must open the areas its beads sit in
+        app.rebuild()
+        await pilot.press("L")
+        await pilot.pause()
+        check(isinstance(app.screen, tui.LabelScreen) and [i for i, _ in menu()] ==
+              ["ben:plan", "kind:decision", "kind:experiment", "needs:ben", "area:alpha"],
+              f"Shift-L lists the open list's labels, run-label families first and area last: {menu()}")
+        await pilot.press(*"dec")
+        await pilot.pause()
+        check(menu() == [("kind:decision", "2 kind:decision")], f"typing narrows the menu to matching labels: {menu()}")
+        await pilot.press("enter")
+        await settle(app, pilot)
+        nodes = bead_nodes(app)
+        shown = {b for b, n in nodes.items() if all(p.is_expanded for p in app.ancestors(n))}
+        check(not isinstance(app.screen, tui.LabelScreen) and set(nodes) == shown == {"ent-aaa.7", "ent-aaa.8"}
+              and "Open 10 › kind:decision 2" in app.title_text.plain and "L kind:decision" in app.keys_text.plain,
+              f"Enter keeps the two beads with the label, open in a folded area, as a step in the title: {app.title_text.plain!r}")
+        await pilot.press("L")
+        await settle(app, pilot)
+        check(set(bead_nodes(app)) == OPEN and "kind:decision" not in app.title_text.plain,
+              "Shift-L again removes the label")
+
+        await pilot.press("n", "L")
+        await pilot.pause()
+        check(("kind:decision", "1 kind:decision") in menu(),
+              f"the menu counts labels over the narrowed list, so .8, blocked, drops out under n: {menu()}")
+        await pilot.press(*"zzz", "enter")
+        await pilot.pause()
+        check(isinstance(app.screen, tui.LabelScreen) and "No label contains" in menu()[0][1],
+              "a text that matches no label says so, and Enter picks nothing")
+        await pilot.press("escape")
+        await settle(app, pilot)
+        check(not isinstance(app.screen, tui.LabelScreen) and app.label_on == "" and set(bead_nodes(app)) == NOW,
+              "Esc closes the menu and leaves the list as it was")
+
+
 def fake_bd(rows: list[dict], calls: list) -> Callable[[list[str]], None]:
     """A stand-in for bd that applies close, reopen, defer, undefer, claims, status, notes and labels to the rows.
 
@@ -591,6 +637,7 @@ async def check_refresh() -> None:
 
 async def main() -> int:
     await check_synthetic()
+    await check_label_picker()
     await check_status_menu()
     await check_refresh()
     if "--bd" in sys.argv:

@@ -7,8 +7,9 @@
 
 The board runs in one tmux pane beside `claude agents`. Its tree opens on every open bead,
 grouped by area and then by epic, with the busiest area unfolded. o, d and c pick the list of
-open, deferred or closed beads. n, v, p and / each narrow that list, and the title shows every
-step with the number of beads left, such as Open 127 › now 42 › P0 18. The detail pane below
+open, deferred or closed beads. n, v, p, Shift-L (one label, picked from a menu) and / each
+narrow that list, and the title shows every step with the number of beads left, such as
+Open 127 › now 42 › P0 18. The detail pane below
 the tree opens on the bead's run labels and then on what the epic's goal loses if the bead is
 skipped. The fields come from bead_model.py, which also holds every bd and claude call the
 board makes.
@@ -41,6 +42,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Callable
 from datetime import datetime
 
@@ -90,6 +92,9 @@ SCOPES = {"open": ("o", "Open", lambda b: b["status"] not in ("closed", "deferre
 # unreviewed applies only to the closed list, because only a closed bead has a result to review.
 FILTERS = [("now", "n", bm.needs_ben_now), ("unreviewed", "v", lambda b: b["awaiting"]),
            ("P0", "p", lambda b: b.get("priority") == 0)]
+# The label families that the Shift-L menu lists first, in this order, because they say how a session runs a bead.
+# The other families follow by name.
+LABEL_FAMILIES = ("ben", "wait", "mode", "kind", "needs")
 # The other keys, in short words so that they fit one line of Ben's 95-column pane. The README spells each key out.
 # j, k, h and l are left out because the arrow keys move and fold too.
 KEYS = [("g", "thread"), ("⏎", "nvim"), ("m", "reviewed"), ("S", "status"), ("s", "session"), ("a", "attach"),
@@ -377,6 +382,78 @@ class StatusScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+def label_order(item: tuple[str, int]) -> tuple:
+    """The run-label families first, then the other families by name, and in each family the most-used label first."""
+    label, n = item
+    family = label.partition(":")[0] if ":" in label else ""
+    rank = LABEL_FAMILIES.index(family) if family in LABEL_FAMILIES else len(LABEL_FAMILIES)
+    return rank, family, -n, label
+
+
+class LabelScreen(ModalScreen[str | None]):
+    """The menu that Shift-L opens: every label on the listed beads, with how many of them carry it.
+
+    A label's number is how many beads the tree lists after picking it. Typing narrows the menu to the labels that
+    contain the text, the arrows or Ctrl-n and Ctrl-p move, Enter picks, and Esc cancels. The text box keeps the
+    focus, so j and k type letters here.
+    """
+
+    DEFAULT_CSS = """
+    LabelScreen { align: center middle; }
+    LabelScreen > Vertical { width: 90%; max-width: 80; height: auto; max-height: 90%; border: round $accent; padding: 0 1; background: $panel; }
+    LabelScreen MenuList { height: auto; max-height: 16; margin-top: 1; border: none; background: $panel; }
+    LabelScreen .hint { margin-top: 1; color: $text-muted; }
+    """
+    BINDINGS = [Binding("escape", "cancel", show=False),
+                Binding("down,ctrl+n", "move(1)", show=False), Binding("up,ctrl+p", "move(-1)", show=False)]
+
+    def __init__(self, where: Text, counts: list[tuple[str, int]]) -> None:
+        super().__init__()
+        self.where, self.counts = where, sorted(counts, key=label_order)
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(Text.assemble(("Narrow ", "bold"), self.where, (" to the beads with one label", "bold")))
+            yield LineInput(placeholder="type to narrow the labels", id="label-filter")
+            yield MenuList(*self.options(""), id="label-menu")
+            yield Static("Type to narrow, ↑↓ and Enter pick, Esc cancels. Shift-L again removes the filter.",
+                         classes="hint")
+
+    def options(self, typed: str) -> list[Option]:
+        width = len(str(max(n for _, n in self.counts)))
+        rows = [Option(Text.assemble((f"{n:>{width}}  ", MUTED), label), id=label)
+                for label, n in self.counts if typed.lower() in label.lower()]
+        return rows or [Option(Text(f"No label contains “{typed}”", style=MUTED), disabled=True)]
+
+    def on_mount(self) -> None:
+        self.query_one(MenuList).highlighted = 0
+        self.query_one(LineInput).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        event.stop()
+        menu = self.query_one(MenuList)
+        menu.clear_options()
+        menu.add_options(self.options(event.value.strip()))
+        menu.highlighted = 0
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        menu = self.query_one(MenuList)
+        if menu.highlighted is not None and not menu.get_option_at_index(menu.highlighted).disabled:
+            self.dismiss(menu.get_option_at_index(menu.highlighted).id)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        self.dismiss(event.option.id)
+
+    def action_move(self, step: int) -> None:
+        menu = self.query_one(MenuList)
+        menu.action_cursor_down() if step > 0 else menu.action_cursor_up()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class ActScreen(ModalScreen[dict | None]):
     """The prompt that closed and deferred open from the status menu: what will happen, then one or two fields.
 
@@ -447,6 +524,7 @@ class BeadBoard(App):
         Binding("n", "narrow('now')", show=False),
         Binding("v", "narrow('unreviewed')", show=False),
         Binding("p", "narrow('P0')", show=False),
+        Binding("L", "label", show=False),
         Binding("g", "thread", show=False),
         Binding("slash", "search", show=False),
         Binding("escape", "clear_search", show=False),
@@ -472,6 +550,7 @@ class BeadBoard(App):
         self.sessions: dict[str, str] = {}  # bead id -> the liveliest state of its sessions
         self.scope_name = "open"  # the list the tree shows: a key of SCOPES
         self.filters_on: dict[str, bool] = {name: False for name, _, _ in FILTERS}
+        self.label_on = ""  # the label that Shift-L narrows the list to, or "" when that filter is off
         self.thread_view = False
         self.query_text = ""
         self.expanded: set[str] | None = None  # None until the first tree, which opens the first area
@@ -564,7 +643,7 @@ class BeadBoard(App):
     # ---------- tree ----------
 
     def funnel(self, scope: str | None = None, filters: dict[str, bool] | None = None) -> list[tuple[str, list[str]]]:
-        """The tree's list as steps: the scope's beads, then each filter that is on, then the search.
+        """The tree's list as steps: the scope's beads, then each filter that is on, then the label, then the search.
 
         Each step is (name, the bead ids left after it), so the title can show the count at every step.
         The arguments stand in for the current scope or filters, so the key strip can count what a key would leave.
@@ -577,6 +656,9 @@ class BeadBoard(App):
             if on.get(name) and (name != "unreviewed" or scope == "closed"):
                 ids = [i for i in ids if keep(self.beads[i])]
                 steps.append((name, ids))
+        if self.label_on:
+            ids = [i for i in ids if self.label_on in self.beads[i]["labels"]]
+            steps.append((self.label_on, ids))
         q = self.query_text.lower()
         if q:
             ids = [i for i in ids if q in i.lower() or q in (self.beads[i].get("title") or "").lower()]
@@ -681,7 +763,8 @@ class BeadBoard(App):
             area = groups[0][0]
             self.expanded = (self.expanded or set()) | {f"a:{area}"} | {f"e:{area}/{e}" for e, _ in groups[0][1]}
         self.open_busiest = False
-        searching = bool(self.query_text)
+        # A search or a label opens every area and epic, so that each bead it finds shows.
+        searching = bool(self.query_text or self.label_on)
         self.rebuilding = True
         tree.clear()
         target: TreeNode | None = None
@@ -742,7 +825,8 @@ class BeadBoard(App):
         self.track(event.node, False)
 
     def track(self, node: TreeNode, expanded: bool) -> None:
-        if getattr(self, "rebuilding", False) or self.query_text or not node.data or self.expanded is None:
+        if (getattr(self, "rebuilding", False) or self.query_text or self.label_on or not node.data
+                or self.expanded is None):
             return
         key = f"a:{node.data[1]}" if node.data[0] == "area" else f"e:{node.data[2]}/{node.data[1]}"
         (self.expanded.add if expanded else self.expanded.discard)(key)
@@ -780,7 +864,7 @@ class BeadBoard(App):
                      for n in [len(self.funnel(s)[-1][1])] if n]
         if elsewhere:
             return Text(f"Nothing in this list. {', '.join(elsewhere)}.", style=MUTED)
-        narrowed = any(self.filters_on.values()) or self.query_text
+        narrowed = any(self.filters_on.values()) or self.label_on or self.query_text
         return Text("Nothing in this list." + (" A highlighted key removes its filter." if narrowed else ""), style=MUTED)
 
     def status_line(self, bid: str, words: list[tuple[str, str]]) -> Text:
@@ -936,14 +1020,21 @@ class BeadBoard(App):
         beads = [b for b in self.beads.values() if b.get("issue_type") != "epic"]
         working = sum(1 for b in beads if b["status"] == "in_progress")
         you = sum(1 for b in beads if bm.asks_ben_now(b))
-        steps = Text(" › ", style=MUTED).join(Text(f"{name} {len(ids)}") for name, ids in self.funnel())
         parts = [(f"{working} working", STATUS_STYLE["prog"]), (f"{you} need you", NEEDS_STYLE)]
         if self.read_at:
             parts.append((f"read {time.strftime('%H:%M', time.localtime(self.read_at))}", MUTED))
         if self.error:
             parts.append((self.error.splitlines()[0], "bold #f38ba8"))
-        self.title_text = Text.assemble(("bd-tui", "bold"), (" · ", MUTED), steps, (" · ", MUTED), joined(parts))
-        self.query_one("#title", Static).update(self.title_text)
+        self.title_text = Text.assemble(("bd-tui", "bold"), (" · ", MUTED), self.steps_text(), (" · ", MUTED),
+                                        joined(parts))
+        title = self.query_one("#title", Static)
+        title.update(self.title_text)
+        # A long label or search step wraps the title onto a second line, so the counts after it stay on screen.
+        title.styles.height = 1 if self.title_text.cell_len <= max(20, (self.size.width or 80) - 2) else 2
+
+    def steps_text(self) -> Text:
+        """The list's steps with the beads left after each, such as Open 127 › now 42."""
+        return Text(" › ", style=MUTED).join(Text(f"{name} {len(ids)}") for name, ids in self.funnel())
 
     def render_keys(self) -> None:
         """The key strip: the lists and the filters on the first row, the other keys below, wrapped to the pane.
@@ -959,6 +1050,7 @@ class BeadBoard(App):
             on = self.filters_on[name]
             left = len(self.funnel(filters={**self.filters_on, name: True})[-1][1])
             filters.append((key, name if on else f"{name} {left}", on))
+        filters.append(("L", self.label_on or "label", bool(self.label_on)))
         filters.append(("/", "search", bool(self.query_text)))
         others = [(key, what, what == "thread" and self.thread_view) for key, what in KEYS]
         width = max(20, (self.size.width or 80) - 2)
@@ -985,6 +1077,27 @@ class BeadBoard(App):
             return
         self.filters_on[name] = not self.filters_on[name]
         self.rebuild()
+
+    def action_label(self) -> None:
+        """Shift-L: narrow the list to the beads with one label, picked from a menu, or remove the label when it is on.
+
+        The menu counts each label over the list as it stands, so a label's number is what the tree lists after it.
+        """
+        if self.label_on:
+            self.label_on = ""
+            self.rebuild()
+            return
+        counts = Counter(label for i in self.shown() for label in self.beads[i]["labels"])
+        if not counts:
+            self.notify("No bead in this list has a label.")
+            return
+
+        def picked(label: str | None) -> None:
+            if label:
+                self.label_on = label
+                self.rebuild()
+
+        self.push_screen(LabelScreen(self.steps_text(), list(counts.items())), picked)
 
     def action_thread(self) -> None:
         self.thread_view = not self.thread_view

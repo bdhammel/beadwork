@@ -79,6 +79,7 @@ with them.
 | `n` | Narrow the list to beads in progress or needing you, which on the closed list are the results that still ask you a question |
 | `v` | Narrow the closed list to the results you have not marked reviewed |
 | `p` | Narrow the list to P0 beads, the ones the epic's MVP needs |
+| Shift-`L` | Open a menu of the labels on the listed beads, each with the number of beads that carry it, and narrow the list to the label you pick. Typing narrows the menu, the arrows move, Enter picks and Esc cancels |
 | `/` | Narrow the list to beads whose id or title matches, where Enter keeps the search and Esc clears it |
 | `g` | Show the epic's open beads in dependency order in the detail pane |
 | Enter | Open the bead's full `bd show` text, read-only, in nvim |
@@ -88,9 +89,12 @@ with them.
 | `a` | Attach to the bead's newest session in a new tmux window |
 | `r` `q` | Reread the beads now, and quit |
 
-The keys `n`, `v`, `p` and `/` only ever narrow the list, and pressing one again removes its
-filter. The title shows each step with the number of beads left, such as
-`Open 127 › now 42 › P0 18`, so you can read the list as a funnel. The key strip shows how many
+The keys `n`, `v`, `p`, Shift-`L` and `/` only ever narrow the list, and pressing one again
+removes its filter. The title shows each step with the number of beads left, such as
+`Open 127 › now 42 › P0 18 › mode:ultracode 3`, so you can read the list as a funnel. The
+label menu counts each label over the list as it stands, so the number beside a label is the
+number of beads the tree lists after you pick it. A label or a search opens every area and epic,
+so each bead it finds shows. The key strip shows how many
 beads the tree would list after you press each list or filter key, and it highlights the keys
 that are on. The title's need-you count covers every list, so it also counts a closed result
 that still asks you a question.
