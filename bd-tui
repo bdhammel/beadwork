@@ -313,12 +313,13 @@ class AskScreen(ModalScreen[str | None]):
     """
     BINDINGS = [Binding("escape", "cancel", show=False)]
 
-    def __init__(self, bead_id: str, keywords: list[str]) -> None:
+    def __init__(self, bead_id: str, effort: str, keywords: list[str]) -> None:
         super().__init__()
-        self.bead_id, self.keywords = bead_id, keywords
+        self.bead_id, self.effort, self.keywords = bead_id, effort, keywords
 
     def compose(self) -> ComposeResult:
-        mode = f" It starts with {', '.join(self.keywords)} (mode label)." if self.keywords else ""
+        with_keywords = f", with {', '.join(self.keywords)}" if self.keywords else ""
+        mode = f" It starts at {self.effort} reasoning effort{with_keywords} (mode label)."
         with Vertical():
             yield Static(f"Start a Claude session on {self.bead_id}. Claude reads the bead, then follows your text.{mode}\n"
                          "Enter starts it, Esc cancels.")
@@ -1058,7 +1059,8 @@ class BeadBoard(App):
         if b.get("issue_type") == "epic":
             return Text("epic", style=MUTED)
         run = [f"ben:{b['ben']}" if b["ben"] else "no ben: label"]
-        run += [f"mode:{b['mode']}"] if b["mode"] else []
+        # A bead with no mode: label starts at the default effort, said in words so that nobody copies it as a label.
+        run += [f"mode:{b['mode']}"] if b["mode"] else [f"{bm.DEFAULT_EFFORT} effort"]
         kind = f"kind:{b['kind']['name']}" + ("?" if b["kind"]["inferred"] else "")
         words = [(w, MUTED) for w in run + [kind]]
         return joined(words + ([("one-shot", "#89b4fa")] if b["oneshot"] else []))
@@ -1358,18 +1360,19 @@ class BeadBoard(App):
         bid = self.selected_id()
         if not bid:
             return
-        keywords = [self.beads[bid]["mode"]] if self.beads[bid]["mode"] in bm.SESSION_KEYWORDS else []
+        mode = self.beads[bid]["mode"]
+        effort, keywords = bm.session_start(mode)
 
         def launch(ask: str | None) -> None:
             if ask and ask.strip():
-                self.launch(bid, ask, keywords)
+                self.launch(bid, ask, mode)
 
-        self.push_screen(AskScreen(bid, keywords), launch)
+        self.push_screen(AskScreen(bid, effort, keywords), launch)
 
     @work(thread=True, group="launch")
-    def launch(self, bid: str, ask: str, keywords: list[str]) -> None:
+    def launch(self, bid: str, ask: str, mode: str) -> None:
         try:
-            out = bm.launch_session(bid, ask, keywords)
+            out = bm.launch_session(bid, ask, mode)
         except (ValueError, RuntimeError, subprocess.SubprocessError, OSError) as e:
             msg = (getattr(e, "stderr", "") or str(e)).strip()
             self.call_from_thread(self.notify, f"Starting the session failed: {msg}", severity="error", timeout=15)

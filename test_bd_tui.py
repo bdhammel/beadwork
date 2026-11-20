@@ -191,7 +191,7 @@ async def check_synthetic() -> None:
         tree.move_cursor(nodes["ent-aaa.9"])
         await pilot.pause()
         body = plain(app.detail)
-        marks = ["ent-aaa.9 · blocked · needs you · P0", "ben:plan · kind:experiment", "Needs You", " ? ",
+        marks = ["ent-aaa.9 · blocked · needs you · P0", "ben:plan · xhigh effort · kind:experiment", "Needs You", " ? ",
                  "If skipped", " date ", "slips: ent-aaa.4",
                  " result ", " worst ", "fast small export reads as fast at every size", " priority ",
                  "P0, because the load test waits on it",
@@ -674,7 +674,38 @@ async def check_refresh() -> None:
         check(started == 1, f"ticks while an export hangs start no second export ({started} started)")
 
 
+def check_session_effort() -> None:
+    """Record the claude command that s runs, because its --effort decides how hard the session reasons."""
+    commands = []
+
+    def fake_run(cmd, **kw):
+        commands.append(cmd)
+        out = json.dumps([bead("ent-aaa.1")]) if cmd[0] == "bd" else "backgrounded · 0123abcd · name\n"
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    real, bm.subprocess.run = bm.subprocess.run, fake_run
+    try:
+        started = {}
+        for mode in ("low", "", "ultrathink"):
+            bm.launch_session("ent-aaa.1", "Do it.", mode)
+            started[mode] = commands[-1]
+    finally:
+        bm.subprocess.run = real
+    effort = {mode: cmd[cmd.index("--effort") + 1] for mode, cmd in started.items()}
+    check(effort == {"low": "low", "": "xhigh", "ultrathink": "xhigh"}
+          and started["ultrathink"][-1].startswith("ultrathink\n") and started["low"][-1].startswith("This session"),
+          "s starts a mode:low bead at --effort low, and any other bead at xhigh with its mode's keyword")
+    beads = bm.enrich([bead("ent-aaa.1", labels=["ben:none", "mode:low"]), bead("ent-aaa.2", labels=["ben:none"]),
+                       bead("ent-aaa.3", labels=["ben:none", "mode:ultrathink"])])
+    lines = {bid: plain(tui.BeadBoard.labels_line(b)) for bid, b in beads.items()}
+    check([beads[i]["oneshot"] for i in beads] == [True, True, False]
+          and "mode:low" in lines["ent-aaa.1"] and "xhigh effort" in lines["ent-aaa.2"]
+          and "xhigh effort" not in lines["ent-aaa.1"],
+          "a ben:none bead is a one-shot with no mode or mode:low, and a bead with no mode shows xhigh effort")
+
+
 async def main() -> int:
+    check_session_effort()
     await check_synthetic()
     await check_label_picker()
     await check_status_menu()

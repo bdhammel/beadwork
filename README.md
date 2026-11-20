@@ -85,7 +85,7 @@ with them.
 | Enter | Open the bead's full `bd show` text, read-only, in nvim |
 | `m` | Mark a closed bead's result reviewed, and press it again to undo |
 | Shift-`S` | Open the status menu, which moves the bead to open, in progress, deferred or closed |
-| `s` | Start a background Claude session on the bead, after you type what it should do |
+| `s` | Start a background Claude session on the bead, after you type what it should do, at the reasoning effort its `mode:` label sets |
 | `a` | Attach to the bead's newest session in a new tmux window |
 | `r` `q` | Reread the beads now, and quit |
 
@@ -148,12 +148,12 @@ line, or a `ben:` or `kind:` label.
 |---|---|
 | An `area:<name>` label on the epic | Groups the tree by area |
 | A `needs:ben` label, a `Needs from Ben:` list in the newest dated note, or an open `kind:decision` bead | Marks the bead `?` and lists it |
-| The `ben:`, `mode:` and `kind:` labels | Shows them on one line under the bead's title, at the top of the detail pane, with `one-shot` when the bead is one |
+| The `ben:`, `mode:` and `kind:` labels | Shows them on one line under the bead's title, at the top of the detail pane, with `xhigh effort` when the bead has no `mode:` label and `one-shot` when the bead is one |
 | A `## If skipped` section with `Goal date:`, `Goal result:`, `Worst case:` and `Priority:` lines | Shows the section after the run labels and any question for Ben |
 | A priority from P0 to P3, which the `Priority:` line in `## If skipped` justifies | Sets what `p` keeps, and is flagged when it disagrees with the goal lines on P0 |
 | The P0 beads under an epic, the ones its MVP needs | Fill the epic row's bar, `█` done, `▒` in progress and `░` the rest, with the count closed of total. The epic's detail lists the P0 beads still open, in dependency order |
 | Every bead under an epic that is not deferred | Gives the epic row's second count, closed of total after a `·`, such as `9/9 · 28/29`, so a P1-or-lower bead still open shows after a full P0 bar |
-| A `mode:ultrathink` or `mode:ultracode` label | Starts the bead's session with that keyword |
+| A `mode:` label | Sets how `s` starts the bead's session: `mode:low` at `claude --effort low`, `mode:ultrathink` and `mode:ultracode` at `xhigh` with that keyword, and a bead with no mode at `xhigh` |
 | Notes that start with a `YYYY-MM-DD:` date | Shows the newest as the Latest note |
 | Acceptance lines, with `[x]` on a finished one | Shows the Done when checklist |
 | A `Follow-ups:` list in the close reason or notes | Lists each follow-up, with ⚑ on one that names no bead |

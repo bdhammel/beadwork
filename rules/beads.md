@@ -43,7 +43,7 @@ to the detail. That keeps the brief readable cold and keeps the detail complete.
 | Layer | Field | What to write | Writing rule it applies |
 |---|---|---|---|
 | Brief | Title | The outcome in plain words, as in the first habit | **Headings state the finding** |
-| Brief | `kind:<kind>` and run labels | One kind from the next table, a `ben:` label, and a `mode:` label when one applies | Lets Ben list beads by label with `bd list -l`, such as every one-shot he can launch tonight |
+| Brief | `kind:<kind>` and run labels | One kind from the next table, a `ben:` label, and a `mode:` label when the work needs other than the default reasoning effort | Lets Ben list beads by label with `bd list -l`, such as every one-shot he can launch tonight |
 | Brief | `## Summary`, first in the description | One to three sentences: the problem in Ben's terms, what the bead changes, and what that unblocks or decides | **Thesis first**; **Give the reason as what the choice buys** |
 | Brief | Priority, and `## If skipped` directly after the summary | P0 to P3 from "Priority ranks a bead against its epic's MVP", and four fixed lines that justify it, as in "State what the goal loses if the bead is skipped" | **Give the reason as what the choice buys** |
 | Brief | `--acceptance` | The definition of done as one check, or one item per line when the theme carries several. For an experiment, the decision rule fixed before the run, such as "B ships if recall@10 beats the baseline by 0.05 or more" | **End an analysis on the decision** |
@@ -219,9 +219,11 @@ sees that the definition of done grew after he read it.
 
 Beads carry run labels instead of an effort size, because writing code costs Claude about
 the same at any size. What changes how a bead is run is who decides that it is done, when
-Ben must be present, and whether the hard part is depth or breadth. Every bead except an epic
-or a `kind:decision` gate carries one `ben:` label. Add a `mode:` label only when one applies,
-because its absence is the default.
+Ben must be present, and how much reasoning the work needs. Every bead except an epic or a
+`kind:decision` gate carries one `ben:` label. A `mode:` label sets the session's reasoning
+effort, and a bead without one runs at `xhigh`, the default. Set the mode when you file the
+bead, and re-judge it when you claim the bead, because the work can turn out lighter or harder
+than it read.
 
 | Label | Use it when | What the implementer does |
 |---|---|---|
@@ -229,13 +231,22 @@ because its absence is the default.
 | `ben:review` | Claude can finish alone, but the result is a reading that Ben must judge before anything builds on it, such as a diagnosis or an experiment's number | Runs unattended and closes with a result headline, which Ben reviews on the board |
 | `ben:plan` | A wrong approach wastes a GPU-day, touches a client deliverable, or meets a fork only Ben can choose | Writes the approach as a dated note, adds `needs:ben`, and stops before code or compute |
 | `ben:pair` | The context is in Ben's head, such as a client constraint, an unstated preference or a design worked out together | Runs only in a live session with Ben, never as a background job |
+| `mode:low` | The work is mechanical and an exact check decides it, such as a rename, a label sweep, a version bump or a one-line fix | Starts the session at `low` reasoning effort |
+| No `mode:` label | The work needs ordinary judgment, such as a feature, a bug fix or an analysis | Starts the session at `xhigh` reasoning effort |
 | `mode:ultrathink` | The hard part is reasoning in one context, such as a cause nobody has found, a decision rule to design, or results to interpret | Starts the session with `ultrathink` |
 | `mode:ultracode` | The work splits into three or more independent parts, each a context's worth, such as many files or repos, a sweep or several review lenses | Starts the session with `ultracode` and runs a workflow; parts that share one GPU or one file gain nothing |
 
-A **one-shot** is a bead with `ben:none` and no `mode:` label, and the board marks it one-shot
-in its labels line. A bead too large for one context is split, or marked `mode:ultracode`
+A **one-shot** is a bead with `ben:none` and either no `mode:` label or `mode:low`, and the
+board marks it one-shot in its labels line. A bead too large for one context is split, or marked `mode:ultracode`
 when its parts can run in parallel. A bead whose spec is unclear and that does not need Ben
 is written as a `kind:analysis` bead first, whose close reason becomes the spec.
+
+Every way of starting a session applies the bead's reasoning effort. The board's `s` key passes
+it to `claude --effort`. A session started by hand runs `claude --effort low` for a `mode:low`
+bead and `claude --effort xhigh` for any other bead. A subagent handed a bead gets the Agent
+tool's `effort` parameter, set to `low` for a `mode:low` bead and to `xhigh` for any other bead,
+because this rule asks for that level explicitly. A session that is already running when it
+claims a bead keeps its own reasoning effort.
 
 A wait on a job, such as CI, a dev build, training or a prod run, takes no label, because the
 session waits with Monitor whatever the job's length. Before a wait that can outlive the
@@ -246,6 +257,7 @@ gate bead with a blocks link, as in "A bead is one theme that fits one context".
 | Bead | Run labels | Why |
 |---|---|---|
 | Two rows with the same timestamp sort the same way in either input order | `ben:none` | A unit test decides it, so it is a one-shot |
+| Every config key named `lr` becomes `learning_rate` | `ben:none mode:low` | A grep and the test suite decide a mechanical rename, so it is a one-shot at low reasoning effort |
 | A missing value gets its own embedding bucket | `ben:plan` | A new bucket changes the vocabulary and invalidates trained checkpoints, which is Ben's call |
 | The reranker gives the same decision across seeds | `ben:review mode:ultrathink` | The unstable early stopping needs a diagnosis, then a five-seed retrain, and the spread needs judging |
 | The next model trains on one of two label schemes | `ben:pair mode:ultrathink` | The scheme is Ben's choice, and comparing the two schemes' results is the hard part |
@@ -388,7 +400,7 @@ description to `${CLAUDE_JOB_DIR:-$TMPDIR}/bead-<slug>.md`, then file it:
 
 ```bash
 bd create "<outcome title>" -t task|bug|chore -p <0-3> \
-  -l repo:<repo>,kind:<kind>,ben:<none|review|plan|pair>[,mode:<ultrathink|ultracode>] \
+  -l repo:<repo>,kind:<kind>,ben:<none|review|plan|pair>[,mode:<low|ultrathink|ultracode>] \
   --acceptance "<runnable check>" \
   --body-file "${CLAUDE_JOB_DIR:-$TMPDIR}/bead-<slug>.md" --silent
 ```
@@ -418,7 +430,7 @@ such as "as of <repo> 3f2c1ab".>
 
 ## How it runs
 **`ben:<value>`** because <who or what decides done>. <`mode:` with one reason, or
-"One-shot.">
+"Runs at xhigh, the default.">. <"One-shot." when the bead is one.>
 
 ## Location
 - `path/to/file.py` — `function_or_class`

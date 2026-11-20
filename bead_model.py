@@ -51,8 +51,11 @@ RANK = {"prog": 0, "ready": 1, "blocked": 2, "deferred": 3, "closed": 4}
 SETTINGS = os.path.expanduser("~/.claude/settings.json")
 SESSION_CWD = os.path.expanduser("~/dev")
 EXPORT_TIMEOUT_S = 30  # a hung `bd export` fails the board's reread instead of holding its worker forever
-# A bead's mode: label names the keyword its session starts with (beads.md, "Run labels").
+# A bead's mode: label sets how its session starts (beads.md, "Run labels"): mode:low lowers the reasoning effort,
+# mode:ultrathink and mode:ultracode add their keyword, and every other bead starts at DEFAULT_EFFORT.
 SESSION_KEYWORDS = ("ultrathink", "ultracode")
+MODE_EFFORT = {"low": "low"}
+DEFAULT_EFFORT = "xhigh"
 PROMPT_MAX = 20000
 # `claude --bg` prints "backgrounded · <id> · <name>" and then the commands that take the id.
 BACKGROUNDED = re.compile(r"backgrounded · (\S+)")
@@ -212,7 +215,12 @@ def launch_prompt(bead: dict, ask: str, keywords: list[str]) -> str:
     return "\n\n".join([*keywords, context, ask.strip()])
 
 
-def launch_session(bead_id: str, ask: str, keywords: list[str], cwd: str = SESSION_CWD) -> dict:
+def session_start(mode: str) -> tuple[str, list[str]]:
+    """The reasoning effort and the keywords that a session starts with, from the bead's mode: label value."""
+    return MODE_EFFORT.get(mode, DEFAULT_EFFORT), [mode] if mode in SESSION_KEYWORDS else []
+
+
+def launch_session(bead_id: str, ask: str, mode: str, cwd: str = SESSION_CWD) -> dict:
     """Start a background Claude session on one bead and return its short id and name."""
     if not BEAD_ID.match(bead_id):
         raise ValueError(f"not a bead id: {bead_id!r}")
@@ -224,9 +232,10 @@ def launch_session(bead_id: str, ask: str, keywords: list[str], cwd: str = SESSI
     shown = subprocess.run(["bd", "show", bead_id, "--json"], capture_output=True, text=True, check=True)
     bead = json.loads(shown.stdout)[0]
     name = f"{bead_id} {' '.join(bead['title'].split())}"[:80]
-    prompt = launch_prompt(bead, ask, [k for k in SESSION_KEYWORDS if k in keywords])
+    effort, keywords = session_start(mode)
+    prompt = launch_prompt(bead, ask, keywords)
     # The prompt always starts with a keyword or "This session", so claude never reads it as a flag.
-    out = subprocess.run(["claude", "--bg", "--agent", "claude", "--name", name, prompt], cwd=cwd,
+    out = subprocess.run(["claude", "--bg", "--agent", "claude", "--effort", effort, "--name", name, prompt], cwd=cwd,
                          env=child_env(), stdin=subprocess.DEVNULL, capture_output=True, text=True,
                          timeout=60, check=True)
     m = BACKGROUNDED.search(out.stdout)
@@ -551,7 +560,7 @@ def enrich(rows: list[dict]) -> dict[str, dict]:
         b["kind"] = kind_of(b)
         run = lambda k: next((l for l in b["labels"] if l.startswith(k + ":")), "")[len(k) + 1:]
         b["ben"], b["mode"] = run("ben"), run("mode")
-        b["oneshot"] = b["ben"] == "none" and not b["mode"]
+        b["oneshot"] = b["ben"] == "none" and b["mode"] in ("", "low")
         b.update(split_description(b.get("description") or ""))
         b["latest"] = latest_note(b.get("notes"))
         b["current"] = current_note(b.get("notes"))
