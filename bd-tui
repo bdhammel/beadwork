@@ -10,8 +10,8 @@ grouped by area and then by epic, with the busiest area unfolded. o, d and c pic
 open, deferred or closed beads. n, v, p, Shift-L (one label, picked from a menu) and / each
 narrow that list, and the title shows every step with the number of beads left, such as
 Open 127 › now 42 › P0 18. The detail pane below
-the tree opens on the bead's run labels and then on what the epic's goal loses if the bead is
-skipped. The fields come from bead_model.py, which also holds every bd and claude call the
+the tree opens on the bead's run labels and its summary, and then on what the epic's goal loses
+if the bead is skipped. The fields come from bead_model.py, which also holds every bd and claude call the
 board makes.
 
   bd-tui                 open the board in this terminal
@@ -203,10 +203,29 @@ def clip(text: str) -> tuple[str, int]:
     return "\n".join(kept), len(lines) - len(kept)
 
 
-def markdown_lite(text: str) -> Text:
-    """A note's Markdown as terminal text: headings and **bold** in bold, `code` in the id colour, bullets as •."""
+def unwrap(text: str) -> str:
+    """Markdown with the hard wraps inside each paragraph joined, so that the pane wraps the text to its own width.
+
+    A blank line, a list item, a heading and a table row each keep their own line, and a wrapped list item joins its
+    first line.
+    """
+    out: list[str] = []
+    for line in text.strip().split("\n"):
+        starts = not line.strip() or re.match(r"\s*(([-*]|\d+\.|#{1,6})\s|\|)", line)
+        if out and out[-1].strip() and not starts and not re.match(r"\s*(#{1,6}\s|\|)", out[-1]):
+            out[-1] += " " + line.strip()
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def markdown_lite(text: str, whole: bool = False) -> Text:
+    """A note's Markdown as terminal text: headings and **bold** in bold, `code` in the id colour, bullets as •.
+
+    A note stops at NOTE_LINES lines or NOTE_CHARS characters; whole shows all of it, as the summary does.
+    """
     out = Text()
-    body, more = clip(text)
+    body, more = (text.strip(), 0) if whole else clip(text)
     for line in body.split("\n"):
         heading = re.match(r"^#{1,6}\s+(.*)$", line)
         if heading:
@@ -957,7 +976,10 @@ class BeadBoard(App):
         return joined([(bid, ID), *words, (f"P{self.beads[bid].get('priority', '')}", MUTED)])
 
     def bead_text(self, bid: str) -> Group:
-        """The approved order: why it is listed, run labels, Needs You, If skipped, Done when, thread, latest note, follow-ups."""
+        """The order: why it is listed, run labels, Summary, Needs You, If skipped, Done when, thread, latest note, follow-ups.
+
+        The Summary follows the run labels because the rules write the brief in that order: title, labels, Summary.
+        """
         b, epic = self.beads[bid], bm.epic_of(self.beads, bid)
         until = local_date(b.get("defer_until")) if b["bucket"] == "deferred" else ""
         why = [(STATUS_WORD[b["bucket"]] + (f" until {until}" if until else ""), STATUS_STYLE[b["bucket"]])]
@@ -969,7 +991,7 @@ class BeadBoard(App):
             why.append((self.change_text(bid), CHANGE_STYLE))
         # The run labels sit under the title, apart from it, because they say how a session runs the bead.
         parts: list[RenderableType] = [self.status_line(bid, why), Text(b.get("title") or "", style="bold"),
-                                       Text(""), self.labels_line(b)]
+                                       Text(""), self.labels_line(b), *self.summary_part(b)]
         if b["needsYou"]:
             asks = grid()
             for a in b["asks"] or [{"text": "Decision bead, waiting on you" if b["kind"]["name"] == "decision"
@@ -1065,6 +1087,20 @@ class BeadBoard(App):
         words = [(w, MUTED) for w in run + [kind]]
         return joined(words + ([("one-shot", "#89b4fa")] if b["oneshot"] else []))
 
+    @staticmethod
+    def summary_part(b: dict) -> list[RenderableType]:
+        """A blank line, the Summary heading and the bead's summary in full, joined into paragraphs.
+
+        A bead without a ## Summary shows the section that stands in for it, such as its ## Objective, and says which.
+        """
+        source = b["summaryFrom"]
+        if not source:
+            return [Text(""), Text("Summary", style=HEAD), Text(" no ## Summary section", style=MUTED)]
+        where = {"summary": "", "paragraph": "  from the first paragraph"}.get(source, f"  from ## {source.title()}")
+        body = markdown_lite(unwrap(b["summary"]), whole=True)
+        body.rstrip()
+        return [Text(""), Text.assemble(("Summary", HEAD), (where, MUTED)), body]
+
     def epic_text(self, epic: str) -> Group:
         e, kids = self.beads[epic], self.live_beads(epic)
         n = {k: sum(1 for i in kids if self.beads[i]["bucket"] == k) for k in bm.RANK}
@@ -1079,7 +1115,7 @@ class BeadBoard(App):
             joined([(f"{n['closed']}/{len(kids)} closed", MUTED), (f"{n['prog']} working", STATUS_STYLE["prog"]),
                     (f"{you} need you", NEEDS_STYLE if you else MUTED), (f"{n['ready']} ready", MUTED),
                     (f"{n['blocked']} blocked", WARM if n["blocked"] else MUTED), (f"{parked} deferred", MUTED)]),
-            Text(""), self.done_when(e["checks"], "Goal"), Text("")]
+            *self.summary_part(e), Text(""), self.done_when(e["checks"], "Goal"), Text("")]
         p0 = self.p0_beads(epic)
         left = [i for i in bm.thread_order(self.beads, epic) if i in p0]
         head = Text("Open P0 beads", style=HEAD)

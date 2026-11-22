@@ -191,7 +191,8 @@ async def check_synthetic() -> None:
         tree.move_cursor(nodes["ent-aaa.9"])
         await pilot.pause()
         body = plain(app.detail)
-        marks = ["ent-aaa.9 · blocked · needs you · P0", "ben:plan · xhigh effort · kind:experiment", "Needs You", " ? ",
+        marks = ["ent-aaa.9 · blocked · needs you · P0", "ben:plan · xhigh effort · kind:experiment",
+                 "Summary", "One line.", "Needs You", " ? ",
                  "If skipped", " date ", "slips: ent-aaa.4",
                  " result ", " worst ", "fast small export reads as fast at every size", " priority ",
                  "P0, because the load test waits on it",
@@ -199,8 +200,19 @@ async def check_synthetic() -> None:
                  "Latest 2026-11-05", "Plan written"]
         where = [body.find(m) for m in marks]
         check(all(i >= 0 for i in where) and where == sorted(where),
-              "the detail runs: why listed, run labels, Needs You, If skipped, Done when, thread, latest note")
+              "the detail runs: why listed, run labels, Summary, Needs You, If skipped, Done when, thread, latest note")
         check("If skipped written" not in body, "the Latest line skips the bookkeeping note")
+        check("Summary\nx\n\nGoal" in plain(app.epic_text("ent-aaa")), "an epic's detail shows its summary above its goal")
+        stand_in = bm.enrich([bead("ent-x.1", description="## Summary\nThe export times\nevery size.\n\n## Context\nx"),
+                              bead("ent-x.2", description="## Objective\nEvery export\nis timed."),
+                              bead("ent-x.3", description=""),
+                              bead("ent-x.4", description="Export times\nby size:\n| rows | s |\n| 100k | 2 |")])
+        shown = {bid: "".join(plain(p) for p in tui.BeadBoard.summary_part(b)) for bid, b in stand_in.items()}
+        check("Summary\nThe export times every size.\n" in shown["ent-x.1"]
+              and "Summary  from ## Objective\nEvery export is timed.\n" in shown["ent-x.2"]
+              and "no ## Summary section" in shown["ent-x.3"]
+              and "Summary  from the first paragraph\nExport times by size:\n| rows | s |\n| 100k | 2 |\n" in shown["ent-x.4"],
+              f"the summary shows with its hard wraps joined, and a stand-in section says where it came from: {shown}")
         b9 = app.beads["ent-aaa.9"]
         no_why = {**b9, "ifSkipped": {k: v for k, v in b9["ifSkipped"].items() if k != "why"}}
         check(not bm.priority_flags(b9) and bm.priority_flags({**b9, "priority": 2}) == ["lines say P0"]
