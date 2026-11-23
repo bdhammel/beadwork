@@ -704,9 +704,9 @@ def check_session_effort() -> None:
     finally:
         bm.subprocess.run = real
     effort = {mode: cmd[cmd.index("--effort") + 1] for mode, cmd in started.items()}
-    check(effort == {"low": "low", "": "xhigh", "ultrathink": "xhigh"}
+    check(effort == {"low": "low", "": "xhigh", "ultrathink": "max"}
           and started["ultrathink"][-1].startswith("ultrathink\n") and started["low"][-1].startswith("This session"),
-          "s starts a mode:low bead at --effort low, and any other bead at xhigh with its mode's keyword")
+          "s starts a mode:low bead at --effort low, a mode:ultrathink bead at max with its keyword, and any other at xhigh")
     beads = bm.enrich([bead("ent-aaa.1", labels=["ben:none", "mode:low"]), bead("ent-aaa.2", labels=["ben:none"]),
                        bead("ent-aaa.3", labels=["ben:none", "mode:ultrathink"])])
     lines = {bid: plain(tui.BeadBoard.labels_line(b)) for bid, b in beads.items()}

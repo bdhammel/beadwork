@@ -233,7 +233,7 @@ than it read.
 | `ben:pair` | The context is in Ben's head, such as a client constraint, an unstated preference or a design worked out together | Works only with Ben present. A session started from the board claims the bead, asks its opening questions with a `needs input:` line, and waits for Ben to attach before it changes anything |
 | `mode:low` | The work is mechanical and an exact check decides it, such as a rename, a label sweep, a version bump or a one-line fix | Starts the session at `low` reasoning effort |
 | No `mode:` label | The work needs ordinary judgment, such as a feature, a bug fix or an analysis | Starts the session at `xhigh` reasoning effort |
-| `mode:ultrathink` | The hard part is reasoning in one context, such as a cause nobody has found, a decision rule to design, or results to interpret | Starts the session with `ultrathink` |
+| `mode:ultrathink` | The hard part is reasoning in one context, such as a cause nobody has found, a decision rule to design, or results to interpret | Starts the session at `max` reasoning effort, with `ultrathink` in its first message, because the keyword deepens only the turn that holds it |
 | `mode:ultracode` | The work splits into three or more independent parts, each a context's worth, such as many files or repos, a sweep or several review lenses | Starts the session with `ultracode` and runs a workflow; parts that share one GPU or one file gain nothing |
 
 A **one-shot** is a bead with `ben:none` and either no `mode:` label or `mode:low`, and the
@@ -243,8 +243,9 @@ is written as a `kind:analysis` bead first, whose close reason becomes the spec.
 
 Every way of starting a session applies the bead's reasoning effort. The board's `s` key passes
 it to `claude --effort`. A session started by hand runs `claude --effort low` for a `mode:low`
-bead and `claude --effort xhigh` for any other bead. A subagent handed a bead gets the Agent
-tool's `effort` parameter, set to `low` for a `mode:low` bead and to `xhigh` for any other bead,
+bead, `claude --effort max` for a `mode:ultrathink` bead and `claude --effort xhigh` for any
+other bead. A subagent handed a bead gets the Agent tool's `effort` parameter, set to `low` for
+a `mode:low` bead, to `max` for a `mode:ultrathink` bead and to `xhigh` for any other bead,
 because this rule asks for that level explicitly. A session that is already running when it
 claims a bead keeps its own reasoning effort.
 

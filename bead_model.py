@@ -52,9 +52,11 @@ SETTINGS = os.path.expanduser("~/.claude/settings.json")
 SESSION_CWD = os.path.expanduser("~/dev")
 EXPORT_TIMEOUT_S = 30  # a hung `bd export` fails the board's reread instead of holding its worker forever
 # A bead's mode: label sets how its session starts (beads.md, "Run labels"): mode:low lowers the reasoning effort,
-# mode:ultrathink and mode:ultracode add their keyword, and every other bead starts at DEFAULT_EFFORT.
+# mode:ultrathink raises it to max, mode:ultrathink and mode:ultracode add their keyword, and every other bead starts
+# at DEFAULT_EFFORT. The ultrathink keyword deepens only the turn whose message holds it, so max keeps the depth for
+# the turns after Ben replies in a session that stopped to ask him.
 SESSION_KEYWORDS = ("ultrathink", "ultracode")
-MODE_EFFORT = {"low": "low"}
+MODE_EFFORT = {"low": "low", "ultrathink": "max"}
 DEFAULT_EFFORT = "xhigh"
 PROMPT_MAX = 20000
 # The instruction that s sends when Ben submits an empty line. The session loads rules/beads.md, which says what claiming a bead
