@@ -85,7 +85,7 @@ with them.
 | Enter | Open the bead's full `bd show` text, read-only, in nvim |
 | `m` | Mark a closed bead's result reviewed, and press it again to undo |
 | Shift-`S` | Open the status menu, which moves the bead to open, in progress, deferred or closed |
-| `s` | Start a background Claude session on the bead, after you type what it should do, at the reasoning effort its `mode:` label sets |
+| `s` | Start a background Claude session on the bead at the reasoning effort its `mode:` label sets. Type what it should do, or press Enter on an empty line to start the bead: the session claims it and works it to its acceptance check as its run labels say. On a `ben:pair` bead the empty line starts a session that asks its opening questions and waits for you as needs input in the agents view, where `a` attaches to it. An empty line starts nothing on an epic, a closed or deferred bead or a decision bead, and the prompt warns when a session named after the bead is already running |
 | `a` | Attach to the bead's newest session in a new tmux window |
 | `r` `q` | Reread the beads now, and quit |
 
@@ -167,7 +167,7 @@ Run the checks from the repo directory. Expected: `all checks passed` and exit c
 
 ```bash
 cd ~/dev/beadwork
-./test_bd_tui.py          # 71 checks on a synthetic export, with a fake bd for the status menu
+./test_bd_tui.py          # 81 checks on a synthetic export, with a fake bd for the status menu
 ./test_bd_tui.py --live   # also checks the tree and renders every bead in your own export, read-only
 ./test_bd_tui.py --bd     # also moves a bead through every status change in a throwaway bd database
 ```

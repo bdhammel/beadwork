@@ -230,7 +230,7 @@ than it read.
 | `ben:none` | A command in `--acceptance` decides done, such as a test, a row-for-row diff or a merged PR | Runs it as a background job; Ben skims the PR or close reason |
 | `ben:review` | Claude can finish alone, but the result is a reading that Ben must judge before anything builds on it, such as a diagnosis or an experiment's number | Runs unattended and closes with a result headline, which Ben reviews on the board |
 | `ben:plan` | A wrong approach wastes a GPU-day, touches a client deliverable, or meets a fork only Ben can choose | Writes the approach as a dated note, adds `needs:ben`, and stops before code or compute |
-| `ben:pair` | The context is in Ben's head, such as a client constraint, an unstated preference or a design worked out together | Runs only in a live session with Ben, never as a background job |
+| `ben:pair` | The context is in Ben's head, such as a client constraint, an unstated preference or a design worked out together | Works only with Ben present. A session started from the board claims the bead, asks its opening questions with a `needs input:` line, and waits for Ben to attach before it changes anything |
 | `mode:low` | The work is mechanical and an exact check decides it, such as a rename, a label sweep, a version bump or a one-line fix | Starts the session at `low` reasoning effort |
 | No `mode:` label | The work needs ordinary judgment, such as a feature, a bug fix or an analysis | Starts the session at `xhigh` reasoning effort |
 | `mode:ultrathink` | The hard part is reasoning in one context, such as a cause nobody has found, a decision rule to design, or results to interpret | Starts the session with `ultrathink` |

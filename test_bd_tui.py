@@ -716,8 +716,97 @@ def check_session_effort() -> None:
           "a ben:none bead is a one-shot with no mode or mode:low, and a bead with no mode shows xhigh effort")
 
 
+async def check_empty_start() -> None:
+    """s with an empty line starts the bead at its mode's effort, and refuses where the rules forbid starting it.
+
+    A fake subprocess.run records the bd and claude commands, so no session starts.
+    """
+    rows = copy.deepcopy(ROWS) + [bead("ent-aaa.12", status="deferred", labels=["area:alpha"], dependencies=[child("ent-aaa")])]
+    extra = {"ent-aaa.1": ["ben:none", "mode:low"], "ent-aaa.2": ["ben:pair"], "ent-aaa.4": ["ben:review", "mode:ultracode"]}
+    for r in rows:
+        r["labels"] = r["labels"] + extra.get(r["id"], [])
+    beads = bm.enrich(rows)
+    refused = {bid for bid, b in beads.items() if bm.start_refusal(b)}
+    check(refused == {"ent-aaa", "ent-aaa.10", "ent-bbb", "ent-aaa.5", "ent-aaa.6", "ent-aaa.12", "ent-aaa.7", "ent-aaa.8",
+                      "ent-aaa.11"},
+          f"an empty line refuses every epic, closed, deferred and decision bead, and starts the rest: {sorted(refused)}")
+
+    commands, notes = [], []
+
+    def fake_run(cmd, **kw):
+        commands.append(cmd)
+        out = json.dumps([bead(cmd[2])]) if cmd[0] == "bd" else "backgrounded · 0123abcd · name\n"
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    real, bm.subprocess.run = bm.subprocess.run, fake_run
+    try:
+        app = tui.BeadBoard(load_rows=lambda: rows, load_sessions=lambda: SESSIONS, refresh_s=0)
+        app.notify = lambda message, **kw: notes.append(message)
+        async with app.run_test(size=(200, 60)) as pilot:
+            await settle(app, pilot)
+            tree = app.query_one(tui.BeadTree)
+
+            async def press_on(bid: str, *keys: str) -> None:
+                tree.move_cursor(bead_nodes(app)[bid])
+                await pilot.pause()
+                await pilot.press(keys[0])
+                await pilot.pause()
+                await pilot.press(*keys[1:])
+                await settle(app, pilot)
+
+            def launched(since: int) -> tuple[str, str]:
+                """The effort and prompt of the background claude command recorded after `since`, or two empty strings."""
+                cmd = next((c for c in commands[since:] if c[0] == "claude"), [])
+                return (cmd[cmd.index("--effort") + 1], cmd[-1]) if "--bg" in cmd and "--effort" in cmd else ("", "")
+
+            tree.move_cursor(bead_nodes(app)["ent-aaa.1"])
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+            lead = app.screen.lead if isinstance(app.screen, tui.AskScreen) else ""
+            check("ben:none" in lead and "low reasoning effort" in lead and "is already working" in lead
+                  and "empty line starts the bead" in lead,
+                  "s's prompt names the ben: label and the effort, says an empty line starts the bead, and warns of a working session")
+            before = len(commands)
+            await pilot.press("enter")
+            await settle(app, pilot)
+            effort, prompt = launched(before)
+            check(effort == "low" and prompt.startswith("This session") and prompt.endswith("\n\n" + bm.START_ASK),
+                  "s and Enter on an empty line start a mode:low bead in the background at --effort low, with the start instruction")
+
+            before = len(commands)
+            await press_on("ent-aaa.4", "s", "enter")
+            empty = launched(before)
+            before = len(commands)
+            await press_on("ent-aaa.4", "s", *"Use the dev split.", "enter")
+            typed = launched(before)
+            check(empty[0] == typed[0] == "xhigh" and empty[1].startswith("ultracode\n") and empty[1].endswith(bm.START_ASK)
+                  and typed[1].endswith("\n\nUse the dev split.") and bm.START_ASK not in typed[1],
+                  "on a mode:ultracode bead both start at xhigh with the keyword, and typed text replaces the start instruction")
+
+            before = len(commands)
+            tree.move_cursor(bead_nodes(app)["ent-aaa.2"])
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+            lead = app.screen.lead if isinstance(app.screen, tui.AskScreen) else ""
+            await pilot.press("enter")
+            await settle(app, pilot)
+            effort, prompt = launched(before)
+            check("opening questions" in lead and effort == "xhigh" and prompt.endswith("\n\n" + bm.PAIR_ASK)
+                  and "needs input:" in bm.PAIR_ASK,
+                  "on a ben:pair bead an empty line starts a background session that asks its questions and waits as needs input")
+
+            before = len(commands)
+            await press_on("ent-aaa.3", "s", "escape")
+            check(not isinstance(app.screen, tui.AskScreen) and len(commands) == before, "Esc in the s prompt starts nothing")
+    finally:
+        bm.subprocess.run = real
+
+
 async def main() -> int:
     check_session_effort()
+    await check_empty_start()
     await check_synthetic()
     await check_label_picker()
     await check_status_menu()

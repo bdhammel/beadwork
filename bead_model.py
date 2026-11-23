@@ -57,6 +57,17 @@ SESSION_KEYWORDS = ("ultrathink", "ultracode")
 MODE_EFFORT = {"low": "low"}
 DEFAULT_EFFORT = "xhigh"
 PROMPT_MAX = 20000
+# The instruction that s sends when Ben submits an empty line. The session loads rules/beads.md, which says what claiming a bead
+# and each ben: value ask, so the instruction names the steps and leaves their detail to the rules.
+START_ASK = ("Start this bead as the bead rules direct: claim it, work it to its acceptance check in the way its "
+             "ben: label sets, and close it with its result, or stop where its ben: label says to stop. If the bead "
+             "is already in progress, continue from its newest dated note.")
+# A ben:pair bead works only with Ben present, so its session prepares the pairing and then waits: the needs input line
+# marks the session as waiting in `claude agents` and on the board, where Ben finds it and attaches with a.
+PAIR_ASK = ("Start this ben:pair bead, which Ben works with you once he attaches to this session. Claim it, read the "
+            "bead and the code or documents it points at, then end your turn with your opening questions for Ben and "
+            "a `needs input:` line. Change nothing else until Ben answers. If the bead is already in progress, read "
+            "its newest dated note first.")
 # `claude --bg` prints "backgrounded · <id> · <name>" and then the commands that take the id.
 BACKGROUNDED = re.compile(r"backgrounded · (\S+)")
 
@@ -218,6 +229,30 @@ def launch_prompt(bead: dict, ask: str, keywords: list[str]) -> str:
 def session_start(mode: str) -> tuple[str, list[str]]:
     """The reasoning effort and the keywords that a session starts with, from the bead's mode: label value."""
     return MODE_EFFORT.get(mode, DEFAULT_EFFORT), [mode] if mode in SESSION_KEYWORDS else []
+
+
+def start_ask(bead: dict) -> str:
+    """The instruction that an empty line in s sends for this enriched bead."""
+    return PAIR_ASK if bead["ben"] == "pair" else START_ASK
+
+
+def start_refusal(bead: dict) -> str:
+    """Why an empty line in s must not start this enriched bead, or "" when it may. Typed text launches on any bead.
+
+    Each refusal follows rules/beads.md: a session claims a bead and never an epic, a deferred bead stays parked until
+    Ben moves it, and a decision bead waits on a person.
+    """
+    bid = bead["id"]
+    if bead.get("issue_type") == "epic":
+        return f"{bid} is an epic. Start one of its beads, because a session claims a bead, never an epic."
+    if bead["status"] == "closed":
+        return f"{bid} is closed. s asks Claude about its result, and S reopens it."
+    if bead["status"] == "deferred":
+        # A claim alone would keep the return date, so S moves the bead out of deferred first, as set_status does.
+        return f"{bid} is deferred. S moves it to open first, which clears its return date, and then s starts it."
+    if bead["kind"]["name"] == "decision":
+        return f"{bid} waits on a person's decision, so no session starts it. s asks Claude about it."
+    return ""
 
 
 def launch_session(bead_id: str, ask: str, mode: str, cwd: str = SESSION_CWD) -> dict:

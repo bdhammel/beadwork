@@ -324,7 +324,7 @@ class BeadTree(Tree, inherit_bindings=False):
 
 
 class AskScreen(ModalScreen[str | None]):
-    """One line of text for the session that `s` starts."""
+    """One line of text for the session that `s` starts. Enter returns the line, even when empty; Esc returns None."""
 
     DEFAULT_CSS = """
     AskScreen { align: center middle; }
@@ -332,17 +332,14 @@ class AskScreen(ModalScreen[str | None]):
     """
     BINDINGS = [Binding("escape", "cancel", show=False)]
 
-    def __init__(self, bead_id: str, effort: str, keywords: list[str]) -> None:
+    def __init__(self, lead: str, placeholder: str) -> None:
         super().__init__()
-        self.bead_id, self.effort, self.keywords = bead_id, effort, keywords
+        self.lead, self.placeholder = lead, placeholder
 
     def compose(self) -> ComposeResult:
-        with_keywords = f", with {', '.join(self.keywords)}" if self.keywords else ""
-        mode = f" It starts at {self.effort} reasoning effort{with_keywords} (mode label)."
         with Vertical():
-            yield Static(f"Start a Claude session on {self.bead_id}. Claude reads the bead, then follows your text.{mode}\n"
-                         "Enter starts it, Esc cancels.")
-            yield LineInput(placeholder=f"What should Claude do with {self.bead_id}?", id="ask")
+            yield Static(self.lead)
+            yield LineInput(placeholder=self.placeholder, id="ask")
 
     def on_mount(self) -> None:
         self.query_one("#ask", LineInput).focus()
@@ -1393,17 +1390,39 @@ class BeadBoard(App):
         self.action_reload()
 
     def action_start_session(self) -> None:
+        """s: a background session on the bead. Typed text is its instruction; an empty line starts the bead itself."""
         bid = self.selected_id()
         if not bid:
             return
-        mode = self.beads[bid]["mode"]
-        effort, keywords = bm.session_start(mode)
+        b = self.beads[bid]
+        mode, refusal = b["mode"], bm.start_refusal(b)
 
         def launch(ask: str | None) -> None:
-            if ask and ask.strip():
+            if ask is None:
+                return
+            if ask.strip():
                 self.launch(bid, ask, mode)
+            elif refusal:
+                self.notify(refusal, severity="warning", timeout=15)
+            else:
+                self.launch(bid, bm.start_ask(b), mode)
 
-        self.push_screen(AskScreen(bid, effort, keywords), launch)
+        effort, keywords = bm.session_start(mode)
+        with_keywords = f", with {', '.join(keywords)}" if keywords else ""
+        ben = f"ben:{b['ben']}" if b["ben"] else "no ben: label"
+        live = self.sessions.get(bid)
+        warn = f"\nA session named after {bid} is already {live}, and a attaches to it." if live else ""
+        if refusal:
+            empty = f"An empty line starts nothing here: {refusal}"
+        elif b["ben"] == "pair":
+            empty = ("Enter on an empty line starts the bead with you: Claude claims it, reads it, asks its opening "
+                     "questions and waits for you as needs input in the agents view, where a attaches to it.")
+        else:
+            empty = ("Enter on an empty line starts the bead: Claude claims it and works it to its acceptance check "
+                     "as its run labels say.")
+        lead = (f"Start a Claude session on {bid} ({ben}) at {effort} reasoning effort{with_keywords} (mode label).{warn}\n"
+                f"Type what Claude should do, and Claude reads the bead first. {empty}\nEsc cancels.")
+        self.push_screen(AskScreen(lead, f"What should Claude do with {bid}? Empty starts the bead."), launch)
 
     @work(thread=True, group="launch")
     def launch(self, bid: str, ask: str, mode: str) -> None:
