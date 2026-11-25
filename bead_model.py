@@ -61,7 +61,7 @@ DEFAULT_EFFORT = "xhigh"
 PROMPT_MAX = 20000
 # The instruction that s sends when Ben submits an empty line. The session loads rules/beads.md, which says what claiming a bead
 # and each ben: value ask, so the instruction names the steps and leaves their detail to the rules.
-START_ASK = ("Start this bead as the bead rules direct: claim it, work it to its acceptance check in the way its "
+START_ASK = ("Start this bead as the bead rules direct: claim it, work it to the deliverable its acceptance names in the way its "
              "ben: label sets, and close it with its result, or stop where its ben: label says to stop. If the bead "
              "is already in progress, continue from its newest dated note.")
 # A ben:pair bead works only with Ben present, so its session prepares the pairing and then waits: the needs input line

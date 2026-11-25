@@ -1418,7 +1418,7 @@ class BeadBoard(App):
             empty = ("Enter on an empty line starts the bead with you: Claude claims it, reads it, asks its opening "
                      "questions and waits for you as needs input in the agents view, where a attaches to it.")
         else:
-            empty = ("Enter on an empty line starts the bead: Claude claims it and works it to its acceptance check "
+            empty = ("Enter on an empty line starts the bead: Claude claims it and works it to the deliverable its acceptance names "
                      "as its run labels say.")
         lead = (f"Start a Claude session on {bid} ({ben}) at {effort} reasoning effort{with_keywords} (mode label).{warn}\n"
                 f"Type what Claude should do, and Claude reads the bead first. {empty}\nEsc cancels.")

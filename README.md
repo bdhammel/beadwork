@@ -85,7 +85,7 @@ with them.
 | Enter | Open the bead's full `bd show` text, read-only, in nvim |
 | `m` | Mark a closed bead's result reviewed, and press it again to undo |
 | Shift-`S` | Open the status menu, which moves the bead to open, in progress, deferred or closed |
-| `s` | Start a background Claude session on the bead at the reasoning effort its `mode:` label sets. Type what it should do, or press Enter on an empty line to start the bead: the session claims it and works it to its acceptance check as its run labels say. On a `ben:pair` bead the empty line starts a session that asks its opening questions and waits for you as needs input in the agents view, where `a` attaches to it. An empty line starts nothing on an epic, a closed or deferred bead or a decision bead, and the prompt warns when a session named after the bead is already running |
+| `s` | Start a background Claude session on the bead at the reasoning effort its `mode:` label sets. Type what it should do, or press Enter on an empty line to start the bead: the session claims it and works it to the deliverable its acceptance names, as its run labels say. On a `ben:pair` bead the empty line starts a session that asks its opening questions and waits for you as needs input in the agents view, where `a` attaches to it. An empty line starts nothing on an epic, a closed or deferred bead or a decision bead, and the prompt warns when a session named after the bead is already running |
 | `a` | Attach to the bead's newest session in a new tmux window |
 | `r` `q` | Reread the beads now, and quit |
 

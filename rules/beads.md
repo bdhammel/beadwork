@@ -2,8 +2,11 @@
 
 **Summary.** A bead, an issue in the `bd` tracker, is a message to an agent that cannot ask
 you questions, so write it for that reader. A bead holds one theme's verifiable outcome that
-a fresh agent can reach in one context, never a single step or a lone finding. A finding
-found by chance joins the bead on its theme before it gets one of its own. Every bead has a
+a fresh agent can reach in one context, never a single step or a lone finding. Its acceptance
+names the deliverable that serves its intention, and holds a further line only when a source
+asks for it, because requirements written ahead of the work block shipping once the work's
+goals move. A finding found by chance joins the notes of the bead on its theme before it gets
+one of its own. Every bead has a
 brief that Ben reads and a detail layer that the agent reads. A bead's priority ranks it
 against its epic's MVP, and the brief's `## If skipped` lines say what that MVP loses if the
 bead is never done and why the bead has its priority. Run labels say how Claude runs the
@@ -17,7 +20,7 @@ Beads serve three readers, and each needs a different amount of text.
 
 | Reader | Shape | What it must carry |
 |---|---|---|
-| Your own next session, on a thread you are running | Self-tracking | A session-sized scope, an `--acceptance` check, and `--parent` / `--deps` for order |
+| Your own next session, on a thread you are running | Self-tracking | A session-sized scope, the deliverable in `--acceptance`, and `--parent` / `--deps` for order |
 | A subagent you spawn now | Subagent brief | The goal, the scope fence, what is already ruled out, and what to return |
 | An agent with no prior context | Cold-start handoff | The full template in "Templates", anchored to a commit, because the code will drift |
 
@@ -25,8 +28,11 @@ All three share four habits, because they decide whether the reader can act alon
 
 - **The title is the outcome,** such as "CSV export reads off the event loop", not the
   activity, such as "look at CSV export".
-- **Acceptance is a check that a command can run,** such as "`make test` exits 0 and
-  `export_csv` makes no blocking call". Put it in `--acceptance`, never only in prose.
+- **Acceptance names the deliverable, and only what a source asks for,** such as "the PR is
+  merged and `make test` exits 0" or "the latency before and after the change is reported on
+  the bead". The deliverable shows that the summary's intention is met. Every further line,
+  and every number, names its source, as "Requirements need a source" says. Put acceptance in
+  `--acceptance`, never only in prose.
 - **State what is ruled out,** with the evidence, so that the reader does not repeat a
   dead end.
 - **Point at evidence,** such as a file and line, a commit, a log query or a run id, never
@@ -46,7 +52,7 @@ to the detail. That keeps the brief readable cold and keeps the detail complete.
 | Brief | `kind:<kind>` and run labels | One kind from the next table, a `ben:` label, and a `mode:` label when the work needs other than the default reasoning effort | Lets Ben list beads by label with `bd list -l`, such as every one-shot he can launch tonight |
 | Brief | `## Summary`, first in the description | One to three sentences: the problem in Ben's terms, what the bead changes, and what that unblocks or decides | **Thesis first**; **Give the reason as what the choice buys** |
 | Brief | Priority, and `## If skipped` directly after the summary | P0 to P3 from "Priority ranks a bead against its epic's MVP", and four fixed lines that justify it, as in "State what the goal loses if the bead is skipped" | **Give the reason as what the choice buys** |
-| Brief | `--acceptance` | The definition of done as one check, or one item per line when the theme carries several. For an experiment, the decision rule fixed before the run, such as "B ships if recall@10 beats the baseline by 0.05 or more" | **End an analysis on the decision** |
+| Brief | `--acceptance` | The deliverable, in one line, and a further line only for what a source asks for, with the source. For an experiment, the result reported against the question it was run to answer. A decision rule joins acceptance only when Ben or the customer set it, with its date, such as "B ships if recall@10 beats the baseline by 0.05 or more (Ben, 3 Mar)" | **End an analysis on the decision** |
 | Brief | `Needs from Ben:` list and the `needs:ben` label | One bullet per question that only Ben can answer, with the options, in the newest dated note or the close reason. Remove the label once he answers | **End on action** |
 | Brief | Close reason | The result, as in "Close a bead with its result" | **Keep claims checkable** |
 | Detail | `## Context`, `## Already known` | Facts with the commit or date they were true at, and what has been ruled out with its evidence | **Point at evidence** |
@@ -70,22 +76,48 @@ decision the same across 5 seeds and reports the spread across seeds. The launch
 needs that before it cites a reranker number." The early-stopping metric, the file and line,
 and the run directory belong in the detail.
 
-`bd lint <id>` reports a missing `## Summary`, `## If skipped` or acceptance check. The board
+`bd lint <id>` reports a missing `## Summary`, `## If skipped` or acceptance. The board
 also marks a bead with ⚠ when it has no kind or `ben:` label, when its priority disagrees
 with its `## If skipped` lines, when its summary holds paths, flags or commit ids, or when an
 experiment's result opens without a number. Run `bd lint <id>` before you hand a bead to
 anyone.
 
+## Requirements need a source
+
+Requirements written ahead of the work block shipping, because the goals of a fast-moving
+project change while the work runs, and a written requirement outlives the goal it served. So
+a bead, an epic and every plan drafted for them hold the fewest requirements that deliver the
+intention, and each requirement names where it came from. For example, a bead whose intention
+is "the export stops stalling other requests" takes "the PR is merged and `make test` exits
+0" as its acceptance. A latency bar joins only when Ben or the customer names one, as in "p95
+under 2 s (customer ticket 412)".
+
+| Rule | Why |
+|---|---|
+| A requirement needs a source: Ben's words, the proposal or statement of work, a filed customer item, or a blocking point from a human reviewer. Write the source beside the line | A line without a source is Claude's guess, and a guess in acceptance becomes a finish line that nobody set |
+| Claude's own ideas, such as a quality bar, a sub-detail, a threshold, extra hardening, or a finding from its own review, sweep or audit, go in the detail as suggestions | A suggestion can be dropped without asking anyone |
+| Quote a bar with its number and its source. Never cite a bar as agreed when nobody set one, and check that the reference itself passes the bar | A bar that the reference fails can never be met |
+| When a source reads two ways, write the reading that commits less, and track the other reading as an open question | A narrow reading widens on request, while a wide reading spends work that may not be owed |
+| When a filed customer item asks for more than the proposal or statement of work, the proposal wins. Flag the extra ask for pushback, and never build it unasked | The proposal is what was committed, and a tracker item can be written wrong |
+| Start broad and tighten on request. A gate, a sign-off or a named owner appears only when a reviewer asks for it | Removing a written requirement needs whoever approved it, and adding one later is cheap |
+| A date is a target, not a gate, unless a source calls it a gate | A missed target moves the plan, while a gate stops the work |
+| Acceptance changes only when a source changes, with a dated note that names the source. A chance finding never joins acceptance | Done should not grow with every finding |
+| When Claude claims a bead, moves it to another epic, or runs `/bead-review`, it drops each acceptance line that has no source and that the deliverable no longer needs, with a dated note. It raises a sourced line that looks stale with Ben | Requirements evolve, and a line that nobody removes keeps blocking |
+| When the written lines and the summary's intention disagree, the intention wins | The lines exist only to serve the intention |
+
+A bead filed before these rules carries no sources, so a missing source on such a bead means
+unknown, not invented. Judge each of its lines against the intention when you claim it.
+
 ## Priority ranks a bead against its epic's MVP
 
-An epic's MVP is the least work that completes the epic as its goal defines it, and the
-epic's `--acceptance` check states it. The MVP is the only scope that an epic writes down,
+An epic's MVP is the deliverables that a source commits to, and the epic's `--acceptance`
+lists them. The MVP is the only scope that an epic writes down,
 because the fuller version of an epic changes while the work runs. Claude judges everything
 beyond the MVP bead by bead. Every bead except an epic takes one priority from this table.
 
 | Priority | The bead is | Why |
 |---|---|---|
-| P0 | Needed by the MVP: the epic's acceptance check cannot pass without it | The MVP is the one scope Ben has fixed, so this work cannot be skipped |
+| P0 | Needed by the MVP: a deliverable in the epic's acceptance cannot ship without it | The MVP is the one scope Ben has fixed, so this work cannot be skipped |
 | P1 | Needed before Ben would call the epic done, such as a supporting experiment or the UI that makes a feature usable | The MVP passes without it, but the epic is not finished in Ben's terms |
 | P2 | An improvement to an epic that is already done | This is the part of the epic that changes most as the work runs |
 | P3 | A papercut or minor housekeeping | The epic's completion does not depend on it |
@@ -98,7 +130,7 @@ current without asking Ben for every move.
 |---|---|
 | Pass `-p` to every `bd create`, for a bead or an epic | `bd` files an issue without `-p` at P2, which claims a judgment that nobody made |
 | A bead's priority is at least as high as the priority of every bead it blocks | The work that needs the blocked bead needs its blocker too, and a script finds a pair that breaks this |
-| Claude re-judges a bead's priority when it claims the bead, when it moves the bead to another epic, and in `/bead-review`, and appends a dated note when the priority moves | A priority set at filing goes stale as the epic changes, and a move changes the acceptance check that the If skipped lines read against |
+| Claude re-judges a bead's priority when it claims the bead, when it moves the bead to another epic, and in `/bead-review`, and appends a dated note when the priority moves | A priority set at filing goes stale as the epic changes, and a move changes the acceptance that the If skipped lines read against |
 | A re-judgment that would move a bead into or out of P0 goes to Ben as a `Needs from Ben:` item, and Claude makes every other move itself | A P0 move changes what the MVP needs, which is scope |
 | A bead with no epic is judged against the bead or deliverable it names, and is P3 when it names none | Without an MVP, no work can need it |
 
@@ -133,16 +165,16 @@ one scale.
 | `Worst case:` | What is the largest harm? | The harm in plain words. When it needs a condition, add the condition and `true today: yes` or `true today: no` |
 | `Priority:` | Why does the bead have its priority? | The priority, then `because` and the reason in one clause |
 
-For example, an epic's acceptance check is "an export of 100k rows returns within 2 s on
-dev". The first bead moves the export off the event loop, and the second retries a dropped
-upload:
+For example, an epic's acceptance is "users can export a full report while other requests
+keep working (customer ticket 412)". The first bead moves the export off the event loop, and
+the second retries a dropped upload:
 
 ```markdown
 ## If skipped
 - Goal date: unchanged
-- Goal result: changes: no export of 100k rows returns within 2 s while it blocks the event loop
+- Goal result: changes: every other request stalls while an export runs, so the export cannot ship
 - Worst case: one export blocks every other request for its full duration
-- Priority: P0, because the acceptance check cannot pass while the export blocks the event loop
+- Priority: P0, because the deliverable cannot ship while the export blocks the event loop
 
 ## If skipped
 - Goal date: unchanged
@@ -152,16 +184,16 @@ upload:
 - Priority: P2, because the export is done without a retry, which only hardens it
 ```
 
-The first bead is P0 because its result line moves the acceptance check. The second is P2,
-and its worst case is not true today, so it is deferred. These rules stop a bead from
-claiming more than its lines show.
+The first bead is P0 because its result line stops the epic's deliverable from shipping. The
+second is P2, and its worst case is not true today, so it is deferred. These rules stop a
+bead from claiming more than its lines show.
 
 | Rule | Why |
 |---|---|
-| P0 when `Goal date` or `Goal result` changes, and P1 to P3 when both read `unchanged` | The lines read against the acceptance check, so the priority cannot claim more of the MVP than they show |
-| `slips:` names an open P0 bead that a `blocks` link records, or the epic's acceptance check | "This has to happen" must point at what waits, and a bead that only a P1 bead waits on does not delay the MVP |
+| P0 when `Goal date` or `Goal result` changes, and P1 to P3 when both read `unchanged` | The lines read against the epic's acceptance, so the priority cannot claim more of the MVP than they show |
+| `slips:` names an open P0 bead that a `blocks` link records, or a deliverable in the epic's acceptance | "This has to happen" must point at what waits, and a bead that only a P1 bead waits on does not delay the MVP |
 | `changes:` names the number or claim that moves | A result that only "gets better" moves nothing Ben can check |
-| A shift too small to change the outcome of the acceptance check reads `unchanged`, with its size in the worst case, such as "recall reads 1.4% low for every arm alike" | The priority sorts on the check's outcome, and the size stays visible |
+| A shift too small to change whether a deliverable ships, or what it can claim, reads `unchanged`, with its size in the worst case, such as "recall reads 1.4% low for every arm alike" | The priority sorts on the deliverable, and the size stays visible |
 | When both lines read `unchanged` and the worst case is `true today: no`, file the bead, run `bd defer <id>`, and append the condition that picks it up as a dated note | The work is recorded once, and nobody has to rule it out again |
 
 Write the lines when you file the bead, before the detail, because they decide whether the
@@ -172,11 +204,11 @@ move the bead into or out of P0, ask Ben first, as the priority rules say.
 ## A bead is one theme that fits one context
 
 A fresh agent must reach the bead's outcome in one context, starting from the bead alone.
-Test the upper bound when you file it: if the bead needs two unrelated acceptance checks or
-more than one PR, it is too big, so split it. A bead is also at least one theme: the outcome
-Ben would name in a status update, such as "every reranker run is reproducible and checks
-its own validation curve". Related checks on one theme are one bead with several acceptance
-items, because each extra bead makes a fresh session read the same code and thread again.
+Test the upper bound when you file it: if the bead needs two unrelated deliverables or more
+than one PR, it is too big, so split it. A bead is also at least one theme: the outcome Ben
+would name in a status update, such as "every reranker run is reproducible and checks its
+own validation curve". Related work on one theme is one bead with one deliverable, because
+each extra bead makes a fresh session read the same code and thread again.
 Split a theme, and planned work, only at these boundaries, because a split anywhere else
 creates handoffs that cost more than they save.
 
@@ -185,19 +217,26 @@ creates handoffs that cost more than they save.
 | Where a fresh session would start with cleared context | The next session reads the bead, not the chat | Port the code and pass the regression in one bead; run the prod job in the next |
 | Where the next part needs only a summary of the part before | The upstream close reason becomes the downstream input | "Find the cause" closes with the file and line; "Fix it" starts from that reason |
 | Where parts can run in parallel | Each subagent or session takes one bead | Score three folds as three beads, one per subagent |
-| Where someone else's decision, approval or gate blocks the next step | `bd ready` holds the downstream work back only while the gate is an open bead | "Get the design decision" and "Clear the security review" each block the prod run |
+| Where an approval that a source requires, or a decision only Ben can make, must come before the next step | `bd ready` holds the downstream work back only while the gate is an open bead | "Clear the security review" blocks the prod run |
+
+A `blocks` link means the downstream work cannot start without the upstream output or that
+approval. An open question that approves no spend, touches no client deliverable, clears no
+security or compliance gate and chooses no scope gets a `kind:decision` bead with no blocks
+link. The work proceeds on a stated default that Ben can override, because a question that
+blocks holds every bead behind it until he reads it.
 
 The steps inside one bead, such as edit, test, lint and commit, are never beads. Track them
 in the session's own task list, or in the bead's notes when they must survive compaction. A
 wait on CI, a review or a deploy is a boundary only when the session ends during the wait or
 another person must act.
 
-A follow-up that you find by chance, such as a one-line bug spotted mid-task or a point from
-a PR review, is always tracked, because untracked it is forgotten. Track it in the first
-place that fits:
+A follow-up that you find by chance, such as a one-line bug spotted mid-task or a blocking
+point from a PR review, is always tracked, because untracked it is forgotten. A reviewer's
+non-blocking suggestion is a nit: drop it with one note, and track nothing. Track a follow-up
+in the first place that fits:
 
-1. **The bead you are working on,** when the finding shares its theme. Add it to that bead's
-   acceptance.
+1. **The bead you are working on,** when the finding shares its theme. Record it in that
+   bead's notes, and fix it in the same PR when it is cheap. A finding never joins acceptance.
 2. **An open, unclaimed bead on its theme,** which `bd search` under the same epic finds.
    Append it there.
 3. **A new bead,** one for every finding on that theme, such as all the points from one PR
@@ -212,8 +251,7 @@ Two guards stop a fold from costing more than the split it saves:
   `ben:plan` or `ben:pair` bead, because the one-shot would then wait for an approval it does
   not need. When it needs that bead's outcome, add a blocks dependency instead.
 
-When you add an item to a bead's acceptance, append a dated note that names it, so that Ben
-sees that the definition of done grew after he read it.
+A bead's acceptance changes only when a source changes, as "Requirements need a source" says.
 
 ## Run labels say how Claude runs a bead
 
@@ -229,7 +267,7 @@ than it read.
 |---|---|---|
 | `ben:none` | A command in `--acceptance` decides done, such as a test, a row-for-row diff or a merged PR | Runs it as a background job; Ben skims the PR or close reason |
 | `ben:review` | Claude can finish alone, but the result is a reading that Ben must judge before anything builds on it, such as a diagnosis or an experiment's number | Runs unattended and closes with a result headline, which Ben reviews on the board |
-| `ben:plan` | A wrong approach wastes a GPU-day, touches a client deliverable, or meets a fork only Ben can choose | Writes the approach as a dated note, adds `needs:ben`, and stops before code or compute |
+| `ben:plan` | The approach approves spend or a GPU-day, touches a client deliverable, clears a security or compliance gate, or chooses scope | Writes the approach as a dated note, adds `needs:ben`, and stops before code or compute |
 | `ben:pair` | The context is in Ben's head, such as a client constraint, an unstated preference or a design worked out together | Works only with Ben present. A session started from the board claims the bead, asks its opening questions with a `needs input:` line, and waits for Ben to attach before it changes anything |
 | `mode:low` | The work is mechanical and an exact check decides it, such as a rename, a label sweep, a version bump or a one-line fix | Starts the session at `low` reasoning effort |
 | No `mode:` label | The work needs ordinary judgment, such as a feature, a bug fix or an analysis | Starts the session at `xhigh` reasoning effort |
@@ -252,8 +290,9 @@ claims a bead keeps its own reasoning effort.
 A wait on a job, such as CI, a dev build, training or a prod run, takes no label, because the
 session waits with Monitor whatever the job's length. Before a wait that can outlive the
 session, append the run id or the PR as a dated note, so that a fresh session can read the
-result. Never run two GPU jobs at once on a shared GPU. A wait on another person's action is a
-gate bead with a blocks link, as in "A bead is one theme that fits one context".
+result. Never run two GPU jobs at once on a shared GPU. A wait on another person's action
+that a source requires is a gate bead with a blocks link, as in "A bead is one theme that
+fits one context".
 
 | Bead | Run labels | Why |
 |---|---|---|
@@ -263,8 +302,9 @@ gate bead with a blocks link, as in "A bead is one theme that fits one context".
 | The reranker gives the same decision across seeds | `ben:review mode:ultrathink` | The unstable early stopping needs a diagnosis, then a five-seed retrain, and the spread needs judging |
 | The next model trains on one of two label schemes | `ben:pair mode:ultrathink` | The scheme is Ben's choice, and comparing the two schemes' results is the hard part |
 
-When unsure between two `ben:` values, pick the one that involves Ben more, because a bead
-that stalls on a missing decision costs more than a plan he approves in a minute.
+When unsure between two `ben:` values, pick the one that involves Ben less, and write the
+choice you made as an assumption in a dated note, because every `ben:plan` and `ben:pair` bead
+stops work until Ben reads it, and a wrong reversible default costs less than the wait.
 
 ## A thread of work is one epic
 
@@ -277,10 +317,14 @@ progress, and a session resumes a thread from the epic instead of from chat hist
 - **Labels go on the epic,** because children inherit them at creation: `repo:<name>` when
   the thread lives in one repo, and `area:<slug>` for the long-running area. Run
   `bd label list-all` and reuse an existing area label before you coin one.
-- **The epic states its MVP as a check.** Put the MVP in the epic's `--acceptance`, as the
-  least result that completes the thread, because every child's priority and `## If skipped`
-  lines are measured against it. Take the check from the goal itself, and never invent a
-  threshold to fill it. Write no fuller version, because Claude judges the rest bead by bead.
+- **The epic states its intention and the deliverables a source commits to.** Its summary
+  states the intention in Ben's or the customer's terms. Its `--acceptance` lists only the
+  deliverables that Ben, the proposal or a filed customer item commits to, one per line with
+  its source, because every child's priority and `## If skipped` lines are measured against
+  it. A sub-detail of a deliverable, such as a file format or a test, belongs to the child
+  bead that builds it, and only when a source asks for it. Never invent a threshold, and
+  write no fuller version, because Claude judges the rest bead by bead. Each open question
+  gets a `kind:decision` bead, which the epic lists under `## Open questions`.
 - **The epic holds the thread's state.** Its description states the goal, the worktree and
   branch, and links to PRs and docs. At the end of each session, append one dated line, such
   as `bd update <epic> --append-notes "<date>: fold 1 scored; next: open PR"`.
@@ -299,12 +343,12 @@ so that `bd ready --parent <epic>` shows the next piece. Write each child's desc
 the session that will start it, because by then the context that filed it is gone.
 
 ```bash
-epic=$(bd create "CSV export is async" -t epic -p 1 -l repo:<repo>,area:export \
-     --acceptance "an export of 100k rows returns within 2 s on dev" --silent)
+epic=$(bd create "CSV export no longer stalls other requests" -t epic -p 1 -l repo:<repo>,area:export \
+     --acceptance "users can export a full report while other requests keep working (customer ticket 412)" --silent)
 a=$(bd create "export_csv runs off the event loop, with route, tests and PR" --parent "$epic" -p 0 \
-     -l kind:feature,ben:none --acceptance "make test exits 0 and the PR is open" --silent)
-b=$(bd create "Load-test the async export on dev" --parent "$epic" --deps "$a" -p 1 \
-     -l kind:experiment,ben:review --acceptance "p95 export latency is reported for 1k, 10k and 100k rows" --silent)
+     -l kind:feature,ben:none --acceptance "make test exits 0 and the PR is merged" --silent)
+b=$(bd create "Measure the async export's latency on dev" --parent "$epic" --deps "$a" -p 1 \
+     -l kind:experiment,ben:review --acceptance "the export's latency on dev, before and after the change, is reported on the bead" --silent)
 bd update "$a" --claim
 bd close "$a" --reason "PR <repo>#123 at 3f2c1ab; asyncio.to_thread offload; 202 + job id"
 ```
@@ -317,8 +361,8 @@ the result itself. A "PR merged" line or "see the log" does not give him the res
 close reason has up to four parts:
 
 1. **Headline:** the first line states the number or finding, what it was compared against,
-   and the decision it supports under the rule in the acceptance check. The board opens the
-   bead's result on this line, so it must stand alone.
+   and, when the bead poses a decision, the decision it supports. The board opens the bead's
+   result on this line, so it must stand alone.
 2. **Evidence:** a table when there are several arms, folds or classes. Mark any reading of
    the numbers as an interpretation, and name only the limits that change the decision. Then
    link each deliverable: a PR as `repo#N`, a doc URL or tab, or a run directory.
@@ -402,7 +446,7 @@ description to `${CLAUDE_JOB_DIR:-$TMPDIR}/bead-<slug>.md`, then file it:
 ```bash
 bd create "<outcome title>" -t task|bug|chore -p <0-3> \
   -l repo:<repo>,kind:<kind>,ben:<none|review|plan|pair>[,mode:<low|ultrathink|ultracode>] \
-  --acceptance "<runnable check>" \
+  --acceptance "<the deliverable, plus any line a source asks for, with its source>" \
   --body-file "${CLAUDE_JOB_DIR:-$TMPDIR}/bead-<slug>.md" --silent
 ```
 
