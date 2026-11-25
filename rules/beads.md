@@ -102,7 +102,7 @@ under 2 s (customer ticket 412)".
 | Start broad and tighten on request. A gate, a sign-off or a named owner appears only when a reviewer asks for it | Removing a written requirement needs whoever approved it, and adding one later is cheap |
 | A date is a target, not a gate, unless a source calls it a gate | A missed target moves the plan, while a gate stops the work |
 | Acceptance changes only when a source changes, with a dated note that names the source. A chance finding never joins acceptance | Done should not grow with every finding |
-| When Claude claims a bead, moves it to another epic, or runs `/bead-review`, it drops each acceptance line that has no source and that the deliverable no longer needs, with a dated note. It raises a sourced line that looks stale with Ben | Requirements evolve, and a line that nobody removes keeps blocking |
+| When Claude claims a bead, moves it to another epic, or runs `/bead-review`, it drops each acceptance line on the bead that has no source and that the deliverable no longer needs, with a dated note. It raises with Ben a sourced line that looks stale, and any line on an epic | Requirements evolve, and a line that nobody removes keeps blocking. An epic's acceptance sets the MVP and so every P0, which is scope |
 | When the written lines and the summary's intention disagree, the intention wins | The lines exist only to serve the intention |
 
 A bead filed before these rules carries no sources, so a missing source on such a bead means
