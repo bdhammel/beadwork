@@ -30,7 +30,7 @@ the board that reads it is one commit. It is a working personal tool.
 ## Before you begin
 
 - **Tools.** You need `uv` and `bd`. The `s` and `a` keys and `--window` also need `tmux` and
-  the `claude` CLI, and Enter needs `nvim`.
+  the `claude` CLI, the `e` key needs the `claude` CLI, and Enter needs `nvim`.
 - **Database.** bd-tui uses `BEADS_DIR` when it is set. Otherwise it uses the database that
   `bd` finds, and failing that the `BEADS_DIR` in the `env` block of `~/.claude/settings.json`.
 - **Python.** You need no venv, because `uv` installs Python 3.12 or later and Textual 8.2.8
@@ -85,6 +85,7 @@ with them.
 | Enter | Open the bead's full `bd show` text, read-only, in nvim |
 | `m` | Mark a closed bead's result reviewed, and press it again to undo |
 | Shift-`S` | Open the status menu, which moves the bead to open, in progress, deferred or closed |
+| `e` | Ask Claude what the bead frames and for a clearer title and summary. One headless call to Opus at medium effort reads the bead and its epic, writes nothing and starts no session. Type what should change, or press Enter on an empty line for the clearest wording the bead supports. The answer opens beside the title and summary as they stand. Enter writes the new title and the body of the `## Summary` section and nothing else, typed text sends a correction to the same Claude call, and Esc discards the answer |
 | `s` | Start a background Claude session on the bead at the reasoning effort its `mode:` label sets. Type what it should do, or press Enter on an empty line to start the bead: the session claims it and works it to the deliverable its acceptance names, as its run labels say. On a `ben:pair` bead the empty line starts a session that asks its opening questions and waits for you as needs input in the agents view, where `a` attaches to it. An empty line starts nothing on an epic, a closed or deferred bead or a decision bead, and the prompt warns when a session named after the bead is already running |
 | `a` | Attach to the bead's newest session in a new tmux window |
 | `r` `q` | Reread the beads now, and quit |

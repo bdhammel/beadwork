@@ -33,6 +33,11 @@ Closed asks for the result in one line and marks it reviewed, because Ben wrote 
 asks for an optional date and reason, and open and in progress act at once. Esc cancels the
 menu and its prompt. When a bead leaves the list, the cursor moves to the bead after it.
 
+e asks Claude what the selected bead frames and for a clearer title and summary, in one headless
+call to Opus at medium effort that writes nothing and starts no session. The answer opens in a
+preview beside the title and summary as they stand. Enter writes the new title and the body of
+the ## Summary section and nothing else, typed text sends a correction, and Esc discards it.
+
 Text is plain weight by default. Bold marks only a bead's title and the section headings, and
 colour carries status, so a narrow pane still reads at a glance.
 """
@@ -108,8 +113,8 @@ FILTERS = [("now", "n", bm.needs_ben_now), ("unreviewed", "v", lambda b: b["awai
 LABEL_FAMILIES = ("ben", "mode", "kind", "needs")
 # The other keys, in short words so that they fit one line of Ben's 95-column pane. The README spells each key out.
 # j, k, h and l are left out because the arrow keys move and fold too.
-KEYS = [("g", "thread"), ("⏎", "nvim"), ("m", "reviewed"), ("S", "status"), ("s", "session"), ("a", "attach"),
-        ("r", "reload"), ("q", "quit")]
+KEYS = [("g", "thread"), ("⏎", "nvim"), ("m", "reviewed"), ("S", "status"), ("e", "edit"), ("s", "session"),
+        ("a", "attach"), ("r", "reload"), ("q", "quit")]
 # The status menu's rows, in bead_model.STATUSES order, as bd status -> (the key that picks it, its name in the menu).
 MENU = {"open": ("o", "open"), "in_progress": ("w", "in progress"), "deferred": ("d", "deferred"), "closed": ("c", "closed")}
 # The statuses that ask for text before they act, as status -> (the word for the Enter hint, the prompt's lead line,
@@ -534,6 +539,79 @@ class ActScreen(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
+class ReframeScreen(ModalScreen[dict | None]):
+    """What e shows when Claude answers: what the bead frames, then its title and summary as they are and as proposed.
+
+    Enter on an empty line returns {"apply": True}, which writes the proposed title and summary. Typed text returns
+    {"again": text}, which sends the text to Claude as a correction. Esc returns None and writes nothing. When Claude
+    keeps both as they are, Enter on an empty line closes the screen.
+    """
+
+    DEFAULT_CSS = """
+    ReframeScreen { align: center middle; }
+    ReframeScreen > Vertical { width: 90%; max-width: 110; height: auto; max-height: 90%; border: round $accent; padding: 0 1; background: $panel; }
+    ReframeScreen VerticalScroll { height: auto; max-height: 70vh; }
+    ReframeScreen .hint { margin-top: 1; color: $text-muted; }
+    """
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def __init__(self, bead_id: str, title: str, summary: str, proposal: dict) -> None:
+        super().__init__()
+        self.bead_id, self.old_title, self.old_summary, self.proposal = bead_id, title, summary, proposal
+        self.same_title = bm.same_words(proposal["title"], title)
+        self.same_summary = bm.same_words(proposal["summary"], summary)
+
+    @staticmethod
+    def para(text: str) -> Text:
+        """Markdown as the detail pane shows a summary, without the trailing newline that would add a blank row."""
+        out = markdown_lite(unwrap(text), whole=True)
+        out.rstrip()
+        return out
+
+    def body(self) -> Group:
+        p = self.proposal
+        parts: list[RenderableType] = [
+            Text.assemble(("Reword ", "bold"), (self.bead_id, "bold " + ID),
+                          (f" · {bm.REFRAME_MODEL} at {bm.REFRAME_EFFORT} effort", MUTED)),
+            Text("\nWhat it frames", style=HEAD), self.para(p["framing"])]
+        if p["unclear"]:
+            parts += [Text("\nWhat the bead leaves unsaid", style=HEAD), Text(p["unclear"], style=WARM)]
+        rows = (("Title", self.old_title, Text(p["title"], style="bold"), self.same_title),
+                ("Summary", unwrap(self.old_summary), self.para(p["summary"]), self.same_summary))
+        for name, old, new, same in rows:
+            table = grid()
+            table.add_row(Text("now", style=MUTED), Text(old or "(none)", style=MUTED))
+            table.add_row(Text("new", style=MUTED), Text("unchanged", style=MUTED) if same else new)
+            parts += [Text("\n" + name, style=HEAD), table]
+        return Group(*parts)
+
+    def compose(self) -> ComposeResult:
+        if self.same_title and self.same_summary:
+            hint = "Claude keeps both as they are. Enter closes, typed text asks again, and Esc closes."
+        else:
+            hint = ("Enter writes the new title and summary and changes nothing else in the bead. Type a correction and "
+                    "press Enter to ask Claude again. Esc discards the proposal.")
+        with Vertical():
+            with VerticalScroll():
+                yield Static(self.body(), id="reframe-body")
+            yield LineInput(placeholder="Enter writes it, or type a correction for Claude", id="reframe-ask")
+            yield Static(hint, classes="hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#reframe-ask", LineInput).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        typed = event.value.strip()
+        if typed:
+            self.dismiss({"again": typed})
+        else:
+            self.dismiss(None if self.same_title and self.same_summary else {"apply": True})
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class BeadBoard(App):
     TITLE = "bd-tui"
     ENABLE_COMMAND_PALETTE = False
@@ -559,6 +637,7 @@ class BeadBoard(App):
         Binding("r", "reload", show=False),
         Binding("m", "mark_reviewed", show=False),
         Binding("S", "status", show=False),
+        Binding("e", "reframe", show=False),
         Binding("s", "start_session", show=False),
         Binding("a", "attach", show=False),
         Binding("q", "quit", show=False),
@@ -1388,6 +1467,72 @@ class BeadBoard(App):
         self.drafts.pop((target, bid), None)
         self.notify(f"{bid} is {MENU[target][1]}" + (" and its result counts as reviewed" if target == "closed" else ""))
         self.action_reload()
+
+    def action_reframe(self) -> None:
+        """e: ask Claude what the bead frames and for a clearer title and summary, and show them before any write.
+
+        The title and summary are fixed here, because a reread can rebuild the tree while Claude answers.
+        """
+        bid = self.selected_id()
+        if not bid:
+            self.notify("e rewords a bead's title and summary. Move the cursor to a bead.")
+            return
+        b = self.beads[bid]
+        title, summary = b.get("title") or "", b["summary"]
+
+        def asked(ask: str | None) -> None:
+            if ask is not None:
+                self.ask_reframe(bid, title, summary, ask, None)
+
+        lead = (f"Ask Claude what {bid} frames, and for a clearer title and summary. One call to {bm.REFRAME_MODEL} at "
+                f"{bm.REFRAME_EFFORT} reasoning effort reads the bead and its epic, writes nothing and starts no session.\n"
+                "Type what should change, or press Enter on an empty line for the clearest title and summary the bead "
+                "supports. The proposal opens here before anything is written. Esc cancels.")
+        self.push_screen(AskScreen(lead, f"What should change in {bid}'s title or summary? Empty asks for the clearest."),
+                         asked)
+
+    @work(thread=True, group="reframe")
+    def ask_reframe(self, bid: str, title: str, summary: str, ask: str, resume: str | None) -> None:
+        self.call_from_thread(self.notify, f"Asking Claude about {bid}. The proposal opens here when Claude answers.")
+        try:
+            proposal = bm.reframe(bid, ask, resume)
+        except (ValueError, LookupError, RuntimeError, subprocess.SubprocessError, OSError) as e:
+            msg = (getattr(e, "stderr", "") or str(e)).strip()
+            self.call_from_thread(self.notify, f"Claude could not reword {bid}: {msg}", severity="error", timeout=15)
+            return
+        self.call_from_thread(self.show_reframe, bid, title, summary, proposal)
+
+    def show_reframe(self, bid: str, title: str, summary: str, proposal: dict) -> None:
+        """Open the proposal. A correction asks again in the same Claude session, and Enter writes the proposal."""
+        if self.closing():
+            return
+
+        def decided(choice: dict | None) -> None:
+            if not choice:
+                return
+            if "again" in choice:
+                self.ask_reframe(bid, title, summary, choice["again"], proposal["session"] or None)
+                return
+            self.changing(bid)
+            self.write_reframe(bid, proposal["title"], proposal["summary"])
+
+        self.push_screen(ReframeScreen(bid, title, summary, proposal), decided)
+
+    @work(thread=True, group="reframe")
+    def write_reframe(self, bid: str, title: str, summary: str) -> None:
+        try:
+            changed = bm.apply_reframe(bid, title, summary, self.run_bd)
+        except (ValueError, LookupError, subprocess.SubprocessError, OSError) as e:
+            msg = (getattr(e, "stderr", "") or str(e)).strip()
+            self.call_from_thread(self.own.discard, bid)
+            self.call_from_thread(self.notify, f"bd could not write {bid}'s title and summary: {msg}\ne asks Claude again.",
+                                  severity="error", timeout=15)
+            return
+        if not changed:
+            self.call_from_thread(self.own.discard, bid)
+        done = f"{bid} has a new {' and a new '.join(changed)}" if changed else f"{bid} already reads that way"
+        self.call_from_thread(self.notify, done)
+        self.call_from_thread(self.action_reload)
 
     def action_start_session(self) -> None:
         """s: a background session on the bead. Typed text is its instruction; an empty line starts the bead itself."""

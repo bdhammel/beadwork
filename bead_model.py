@@ -11,7 +11,8 @@ such as `needsYou`, `flags` and `ifSkipped`. The rules for each come from rules/
   - flags: the structural checks from the rules, such as a missing `## Summary`.
 
 The module also holds every bd and claude call that bd-tui makes: the export, the reviewed
-label, a bead's status, and the start and listing of Claude sessions named after a bead. It
+label, a bead's status, the start and listing of Claude sessions named after a bead, and the
+headless call behind the e key with the title and summary write that follows it. It
 uses only the standard library, so that any script can import it without a venv.
 
 The regular expressions treat \\w, \\b and \\d as ASCII-only, so they are spelled out as ASCII
@@ -72,6 +73,45 @@ PAIR_ASK = ("Start this ben:pair bead, which Ben works with you once he attaches
             "its newest dated note first.")
 # `claude --bg` prints "backgrounded · <id> · <name>" and then the commands that take the id.
 BACKGROUNDED = re.compile(r"backgrounded · (\S+)")
+# The e key's call: one headless Claude turn that says what a bead frames and proposes its title and summary. Ben asked
+# for Opus at medium effort, because the rewrite needs judgment but not a work session. The call gets only the read-only
+# file tools and no MCP server, because Ben's settings allow every Bash command, and with Bash the call could run
+# `bd update` itself. The board writes the answer, and only after Ben accepts it.
+REFRAME_MODEL, REFRAME_EFFORT = "opus", "medium"
+REFRAME_TOOLS = "Read,Grep,Glob"
+REFRAME_TIMEOUT_S = 300
+REFRAME_FIELDS = ("framing", "title", "summary", "unclear")
+REFRAME_SCHEMA = json.dumps({"type": "object", "additionalProperties": False, "required": list(REFRAME_FIELDS),
+                             "properties": {f: {"type": "string"} for f in REFRAME_FIELDS}})
+REFRAME_DEFAULT_ASK = "No instruction: propose the clearest title and summary that the bead supports."
+REFRAME_PROMPT = """\
+Ben is readying bead {id} on his bead board and wants to know what work it frames. The bead and its parent epic follow, \
+as `bd show` prints them.
+
+Answer in four fields:
+- framing: two or three plain sentences to Ben that say what work the bead asks for and what finishing it means, judged \
+from the whole bead, including its acceptance, its detail and its notes.
+- title: the bead's title, which states the outcome in plain words, never the activity, as the bead rules say.
+- summary: the text of the bead's `## Summary` section, without the heading. One to three sentences in Ben's terms: the \
+problem, what the bead changes, and what that unblocks or decides. It holds no paths, flags, commit ids or names coined \
+in a session. Write it as the bead's own summary, never as a comment on your rewrite.
+- unclear: what the bead and its epic leave unsaid that the title or summary would need, or an empty string. Never \
+invent intent to fill a gap: keep the title and summary to what the bead supports, and name the gap here.
+
+Keep the current title or summary word for word where it already does its job. You may read the files the bead names \
+with Read, Grep and Glob. You change nothing, because the board writes your title and summary only if Ben accepts them.
+
+Ben's instruction: {ask}
+
+<bead>
+{bead}
+</bead>
+
+<epic>
+{epic}
+</epic>
+"""
+REFRAME_AGAIN = "Ben's correction: {ask}\n\nAnswer in the same four fields again, for the same bead."
 
 
 # ---------- bd and claude ----------
@@ -279,6 +319,112 @@ def launch_session(bead_id: str, ask: str, mode: str, cwd: str = SESSION_CWD) ->
     if not m:
         raise RuntimeError(f"claude --bg printed no session id:\n{out.stdout}{out.stderr}")
     return {"session": m.group(1), "name": name}
+
+
+def show_bead(bead_id: str) -> dict:
+    """One bead as `bd show --json` returns it, read fresh rather than from the board's last export."""
+    if not BEAD_ID.match(bead_id):
+        raise ValueError(f"not a bead id: {bead_id!r}")
+    out = subprocess.run(["bd", "show", bead_id, "--json"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                         timeout=EXPORT_TIMEOUT_S, check=True)
+    return json.loads(out.stdout)[0]
+
+
+def show_text(bead_id: str) -> str:
+    """One bead as `bd show` prints it for a reader, without colour."""
+    out = subprocess.run(["bd", "show", bead_id], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                         timeout=EXPORT_TIMEOUT_S, check=True, env={**os.environ, "NO_COLOR": "1"})
+    return out.stdout.strip()
+
+
+def reframe(bead_id: str, ask: str, resume: str | None = None, cwd: str = SESSION_CWD) -> dict:
+    """Ask Claude what a bead frames, and for its title and summary, in one headless turn that writes nothing.
+
+    The first turn sends the bead and its parent epic with Ben's instruction, or with REFRAME_DEFAULT_ASK when he typed
+    none. A correction resumes that turn's session, so Claude keeps its reading of the bead. Returns the four fields of
+    REFRAME_FIELDS, with the title on one line, and the session id that a correction resumes.
+    """
+    if not BEAD_ID.match(bead_id):
+        raise ValueError(f"not a bead id: {bead_id!r}")
+    if resume:
+        if not ask.strip():
+            raise ValueError("type the correction for Claude")
+        prompt = REFRAME_AGAIN.format(ask=ask.strip())
+    else:
+        parent = show_bead(bead_id).get("parent")
+        epic = show_text(parent) if parent and BEAD_ID.match(parent) else "This bead has no parent epic."
+        prompt = REFRAME_PROMPT.format(id=bead_id, ask=ask.strip() or REFRAME_DEFAULT_ASK, bead=show_text(bead_id),
+                                       epic=epic)
+    # The prompt goes on stdin, so that no length limit or leading "-" reaches the command line.
+    cmd = ["claude", "-p", "--model", REFRAME_MODEL, "--effort", REFRAME_EFFORT, "--tools", REFRAME_TOOLS,
+           "--strict-mcp-config", "--disable-slash-commands", "--output-format", "json", "--json-schema", REFRAME_SCHEMA,
+           *(["--resume", resume] if resume else [])]
+    out = subprocess.run(cmd, cwd=cwd, env=child_env(), input=prompt, capture_output=True, text=True,
+                         timeout=REFRAME_TIMEOUT_S, check=True)
+    try:
+        reply = json.loads(out.stdout)
+    except ValueError:
+        raise RuntimeError(f"claude -p printed no JSON:\n{out.stdout[-500:]}{out.stderr[-500:]}") from None
+    answer = reply.get("structured_output")
+    if reply.get("is_error") or not isinstance(answer, dict) or not all(isinstance(answer.get(f), str) for f in REFRAME_FIELDS):
+        raise RuntimeError(f"Claude gave no title and summary: {str(reply.get('result') or reply)[:500]}")
+    proposal = {f: answer[f].strip() for f in REFRAME_FIELDS}
+    proposal["title"] = " ".join(proposal["title"].split())
+    if not proposal["title"] or not proposal["summary"]:
+        raise RuntimeError("Claude gave an empty title or summary")
+    return {**proposal, "session": reply.get("session_id") or ""}
+
+
+def replace_summary(desc: str, summary: str) -> str:
+    """The description with the body of its ## Summary section replaced, and every other section left as it was.
+
+    A description without a ## Summary gets one at the top. Text that sat above its first heading moves under a
+    ## Context heading, because left untitled it would join the new summary.
+    """
+    summary = summary.strip()
+    parts = re.split(r"^(#{1,3}\s+.+)$", desc, flags=re.M)
+    for i in range(1, len(parts), 2):
+        if re.sub(r"^#+\s+", "", parts[i], count=1).strip().lower() == "summary":
+            follows = i + 2 < len(parts)
+            parts[i + 1] = f"\n{summary}\n" + ("\n" if follows else "")
+            return "".join(parts)
+    head, rest = parts[0].strip(), "".join(parts[1:]).strip()
+    body = "\n\n".join(x for x in (f"## Context\n{head}" if head else "", rest) if x)
+    return f"## Summary\n{summary}\n" + (f"\n{body}\n" if body else "")
+
+
+def same_words(a: str, b: str) -> bool:
+    """Two texts with the same words in the same order. Claude reads the summary as `bd show` wraps it, so a summary it
+    keeps word for word can come back wrapped differently, and that must not count as a new summary."""
+    return a.split() == b.split()
+
+
+def apply_reframe(bead_id: str, title: str, summary: str, run: Callable[[list[str]], None] = bd_write,
+                  show: Callable[[str], dict] = show_bead) -> list[str]:
+    """Write the title and the ## Summary body that Ben accepted from e, and return which of the two changed.
+
+    The description is read again just before the write, so that an edit made while Ben read the proposal survives,
+    and only its summary section changes. No dated note is written, because the board reads an open bead's Needs from
+    Ben list from its newest note alone.
+    """
+    if not BEAD_ID.match(bead_id):
+        raise ValueError(f"not a bead id: {bead_id!r}")
+    title = " ".join(title.split())
+    if not title or not summary.strip():
+        raise ValueError("the title and the summary must not be empty")
+    now = show(bead_id)
+    desc = now.get("description") or ""
+    old = split_description(desc)
+    args, changed = ["update", bead_id], []
+    if title != now.get("title"):
+        args.append(f"--title={title}")
+        changed.append("title")
+    if old["summaryFrom"] != "summary" or not same_words(old["summary"], summary):
+        args.append(f"--description={replace_summary(desc, summary)}")
+        changed.append("summary")
+    if changed:
+        run(args)
+    return changed
 
 
 def list_sessions(include_finished: bool) -> list[dict]:

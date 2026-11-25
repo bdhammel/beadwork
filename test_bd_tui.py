@@ -430,7 +430,7 @@ def fake_bd(rows: list[dict], calls: list) -> Callable[[list[str]], None]:
         elif "claim" in opts:
             row.update(status="in_progress", assignee="ben")
         elif verb == "update":
-            row.update({k: v or None for k, v in opts.items() if k in ("status", "assignee")})
+            row.update({k: v or None for k, v in opts.items() if k in ("status", "assignee", "title", "description")})
         note = opts.get("reason") if verb == "defer" else opts.get("append-notes")
         if note:
             row["notes"] = (row.get("notes") + "\n" if row.get("notes") else "") + note
@@ -589,6 +589,24 @@ def check_bd_scratch() -> None:
         except subprocess.CalledProcessError as e:
             refused = "invalid --until" in e.stderr
         check(refused and show(bid)["status"] == "open", "bd: a date bd cannot read fails with bd's own message and leaves the bead open")
+
+        # e's write: a bead with every part the rules give it keeps all but its title and its summary's body.
+        wrapped = SKIPPED.replace("One line.", "One\nline.")
+        bid = subprocess.run(["bd", "create", "Look at the export", "-p", "2", "--silent", "--labels=kind:feature,ben:none",
+                              "--acceptance=the export is timed", f"--description={wrapped}"],
+                             cwd=d, env=env, capture_output=True, text=True, check=True).stdout.strip()
+        run(["update", bid, f"--append-notes={today}: Needs from Ben:\n- pick an export size"])
+        before = show(bid)
+        changed = bm.apply_reframe(bid, "-The export is timed at three sizes", "The export is timed at three sizes.", run, show)
+        after = show(bid)
+        kept = ("acceptance_criteria", "labels", "notes", "priority", "status")
+        check(changed == ["title", "summary"] and after["title"] == "-The export is timed at three sizes"
+              and after["description"] == bm.replace_summary(before["description"], "The export is timed at three sizes.")
+              and bm.if_skipped(after["description"]) == bm.if_skipped(before["description"])
+              and all(after.get(k) == before.get(k) for k in kept),
+              "bd: e's write changes the title and the summary's body, and keeps If skipped, acceptance, labels and notes"
+              + "".join(f"\n     {k}: {before.get(k)!r} -> {after.get(k)!r}" for k in ("title", "description", *kept)
+                        if before.get(k) != after.get(k)))
 
 
 async def check_refresh() -> None:
@@ -804,8 +822,98 @@ async def check_empty_start() -> None:
         bm.subprocess.run = real
 
 
+async def check_reframe() -> None:
+    """e asks Claude in one headless turn with no write tools, shows the proposal, and writes the title and summary on Enter.
+
+    A fake subprocess.run answers bd show and claude -p, and fake_bd applies the write, so nothing reaches bd or Claude.
+    """
+    new = bm.replace_summary(SKIPPED, "Two lines.\nNow.")
+    check(new == SKIPPED.replace("One line.", "Two lines.\nNow.") and bm.split_description(new)["summary"] == "Two lines.\nNow."
+          and bm.replace_summary("Old opening.\n\n## Objective\nShip it.", "New.")
+          == "## Summary\nNew.\n\n## Context\nOld opening.\n\n## Objective\nShip it.\n"
+          and bm.replace_summary("## Summary\nOld.", "New.") == "## Summary\nNew.\n",
+          "replace_summary changes only the summary's body, and a bead without one gets it above its old text, under ## Context")
+    writes = []
+    kept = bm.apply_reframe("ent-aaa.1", "Title of ent-aaa.1", "Two lines. Now.", writes.append,
+                            lambda _: {"title": "Title of ent-aaa.1", "description": new})
+    check(kept == [] and writes == [], f"a summary that Claude only wraps differently counts as unchanged, so nothing is written: {writes}")
+
+    rows, calls, commands = copy.deepcopy(ROWS), [], []
+    answers = iter([{"framing": "It times the export.", "title": "The export is timed", "summary": "Timed.", "unclear": "No size."},
+                    {"framing": "It times the export at three sizes.", "title": "The export is timed at three sizes",
+                     "summary": "The export is timed at three sizes.", "unclear": ""},
+                    {"framing": "It times the export at the sizes Ben picks.", "title": "The export is timed at the sizes Ben picks",
+                     "summary": "The export is timed at the sizes Ben picks, so the load test can cite one number.", "unclear": ""}])
+
+    def fake_run(cmd, **kw):
+        commands.append((cmd, kw.get("input") or ""))
+        if cmd[:2] == ["bd", "show"]:
+            row = next(r for r in rows if r["id"] == cmd[2])
+            parent = next((d["depends_on_id"] for d in row["dependencies"] if d["type"] == "parent-child"), None)
+            out = json.dumps([{**row, "parent": parent}]) if "--json" in cmd else f"{row['title']}\n{row['description']}"
+        else:
+            out = json.dumps({"session_id": "sess-1", "is_error": False, "structured_output": next(answers)})
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    def claude_calls() -> list[tuple[list[str], str]]:
+        return [(c, i) for c, i in commands if c[0] == "claude"]
+
+    real, bm.subprocess.run = bm.subprocess.run, fake_run
+    try:
+        app = tui.BeadBoard(load_rows=lambda: copy.deepcopy(rows), load_sessions=None, run_bd=fake_bd(rows, calls), refresh_s=0)
+        async with app.run_test(size=(200, 60)) as pilot:
+            await settle(app, pilot)
+            tree = app.query_one(tui.BeadTree)
+            proposal = lambda: isinstance(app.screen, tui.ReframeScreen)
+
+            async def press(*keys: str) -> None:
+                for key in keys:
+                    await pilot.press(key)
+                    await pilot.pause()
+                await settle(app, pilot)
+
+            tree.move_cursor(bead_nodes(app)["ent-aaa.9"])
+            await press("e")
+            lead = app.screen.lead if isinstance(app.screen, tui.AskScreen) else ""
+            await press(*"name the sizes", "enter")
+            cmd, prompt = claude_calls()[-1]
+            body = plain(app.screen.body()) if proposal() else ""
+            check("opus at medium reasoning effort" in lead and "writes nothing" in lead and proposal()
+                  and cmd[:2] == ["claude", "-p"] and cmd[cmd.index("--model") + 1] == "opus"
+                  and cmd[cmd.index("--effort") + 1] == "medium" and cmd[cmd.index("--tools") + 1] == "Read,Grep,Glob"
+                  and "--strict-mcp-config" in cmd and "--resume" not in cmd
+                  and "Ben's instruction: name the sizes" in prompt and "One line." in prompt and "Alpha epic" in prompt,
+                  "e asks Opus at medium effort with only the read-only file tools, sending Ben's text, the bead and its epic")
+            check(all(s in body for s in ("It times the export.", "No size.", "Title of ent-aaa.9", "The export is timed", "One line."))
+                  and not banned_bindings(app),
+                  "the proposal shows what the bead frames, what it leaves unsaid, and the title and summary now and new")
+            await press("escape")
+            check(not proposal() and calls == [], "Esc discards the proposal without a bd write")
+
+            await press("e", "enter")
+            first = claude_calls()[-1][1]
+            await press(*"use the sizes I pick", "enter")
+            cmd, prompt = claude_calls()[-1]
+            check(bm.REFRAME_DEFAULT_ASK in first and cmd[cmd.index("--resume") + 1] == "sess-1"
+                  and prompt.startswith("Ben's correction: use the sizes I pick") and proposal()
+                  and "sizes Ben picks" in plain(app.screen.body()),
+                  "an empty line asks for the clearest wording, and a typed correction resumes the same Claude session")
+            notes = app.beads["ent-aaa.9"]["notes"]
+            await press("enter")
+            b = app.beads["ent-aaa.9"]
+            check(calls == [["update", "ent-aaa.9", "--title=The export is timed at the sizes Ben picks",
+                             "--description=" + SKIPPED.replace("One line.", "The export is timed at the sizes Ben picks, "
+                                                                "so the load test can cite one number.")]]
+                  and b["title"] == "The export is timed at the sizes Ben picks" and b["ifSkipped"]["why"].startswith("P0")
+                  and b["notes"] == notes and "ent-aaa.9" not in app.marks and not proposal(),
+                  f"Enter writes only the title and the summary's body, with no note and no change mark: {calls}")
+    finally:
+        bm.subprocess.run = real
+
+
 async def main() -> int:
     check_session_effort()
+    await check_reframe()
     await check_empty_start()
     await check_synthetic()
     await check_label_picker()
