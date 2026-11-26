@@ -91,7 +91,9 @@ as `bd show` prints them.
 Answer in four fields:
 - framing: two or three plain sentences to Ben that say what work the bead asks for and what finishing it means, judged \
 from the whole bead, including its acceptance, its detail and its notes.
-- title: the bead's title, which states the outcome in plain words, never the activity, as the bead rules say.
+- title: the bead's title, as the bead rules say: at most about 60 characters (about 45 for an epic), a specific \
+verb and its object, or the question the bead answers when its result is still unknown, with the word that tells it \
+from its sibling beads first. Baselines, dates, spans, sources and approval steps stay in the summary and acceptance.
 - summary: the text of the bead's `## Summary` section, without the heading. One to three sentences in Ben's terms: the \
 problem, what the bead changes, and what that unblocks or decides. It holds no paths, flags, commit ids or names coined \
 in a session. Write it as the bead's own summary, never as a comment on your rewrite.

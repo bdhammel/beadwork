@@ -26,8 +26,17 @@ Beads serve three readers, and each needs a different amount of text.
 
 All three share four habits, because they decide whether the reader can act alone:
 
-- **The title is the outcome,** such as "CSV export reads off the event loop", not the
-  activity, such as "look at CSV export".
+- **The title is a short handle that Ben skims on the board,** at most about 60 characters,
+  because the board cuts a longer title at the edge of its row. Start with a specific verb and
+  its object, such as "Move CSV export off the event loop", never a vague activity such as
+  "look at CSV export". A bead whose result is still unknown, such as most experiments,
+  analyses and decisions, takes the question it answers, such as "Does reranker B beat BM25
+  on support tickets?", so that the title shows what is being tested without assuming the
+  result. A bead that builds, runs or ships something takes a verb, even when its kind is
+  experiment. Put the word that tells sibling beads
+  apart first, such as the deliverable or the component. Leave baselines, dates, spans,
+  sources, approval steps and any second outcome to the summary and acceptance, because a
+  title that repeats them is cut off on the board and goes stale when they change.
 - **Acceptance names the deliverable, and only what a source asks for,** such as "the PR is
   merged and `make test` exits 0" or "the latency before and after the change is reported on
   the bead". The deliverable shows that the summary's intention is met. Every further line,
@@ -48,7 +57,7 @@ to the detail. That keeps the brief readable cold and keeps the detail complete.
 
 | Layer | Field | What to write | Writing rule it applies |
 |---|---|---|---|
-| Brief | Title | The outcome in plain words, as in the first habit | **Headings state the finding** |
+| Brief | Title | A specific verb and its object, or the question that a bead with an unknown result answers, in about 60 characters, as in the first habit | **Name everything explicitly** |
 | Brief | `kind:<kind>` and run labels | One kind from the next table, a `ben:` label, and a `mode:` label when the work needs other than the default reasoning effort | Lets Ben list beads by label with `bd list -l`, such as every one-shot he can launch tonight |
 | Brief | `## Summary`, first in the description | One to three sentences: the problem in Ben's terms, what the bead changes, and what that unblocks or decides | **Thesis first**; **Give the reason as what the choice buys** |
 | Brief | Priority, and `## If skipped` directly after the summary | P0 to P3 from "Priority ranks a bead against its epic's MVP", and four fixed lines that justify it, as in "State what the goal loses if the bead is skipped" | **Give the reason as what the choice buys** |
@@ -296,11 +305,11 @@ fits one context".
 
 | Bead | Run labels | Why |
 |---|---|---|
-| Two rows with the same timestamp sort the same way in either input order | `ben:none` | A unit test decides it, so it is a one-shot |
-| Every config key named `lr` becomes `learning_rate` | `ben:none mode:low` | A grep and the test suite decide a mechanical rename, so it is a one-shot at low reasoning effort |
-| A missing value gets its own embedding bucket | `ben:plan` | A new bucket changes the vocabulary and invalidates trained checkpoints, which is Ben's call |
-| The reranker gives the same decision across seeds | `ben:review mode:ultrathink` | The unstable early stopping needs a diagnosis, then a five-seed retrain, and the spread needs judging |
-| The next model trains on one of two label schemes | `ben:pair mode:ultrathink` | The scheme is Ben's choice, and comparing the two schemes' results is the hard part |
+| Sort same-timestamp rows the same way in either input order | `ben:none` | A unit test decides it, so it is a one-shot |
+| Rename the config key `lr` to `learning_rate` | `ben:none mode:low` | A grep and the test suite decide a mechanical rename, so it is a one-shot at low reasoning effort |
+| Give missing values their own embedding bucket | `ben:plan` | A new bucket changes the vocabulary and invalidates trained checkpoints, which is Ben's call |
+| Why does the reranker's decision change across seeds? | `ben:review mode:ultrathink` | The unstable early stopping needs a diagnosis, then a five-seed retrain, and the spread needs judging |
+| Which label scheme should the next model train on? | `ben:pair mode:ultrathink` | The scheme is Ben's choice, and comparing the two schemes' results is the hard part |
 
 When unsure between two `ben:` values, pick the one that involves Ben less, and write the
 choice you made as an assumption in a dated note, because every `ben:plan` and `ben:pair` bead
@@ -317,6 +326,9 @@ progress, and a session resumes a thread from the epic instead of from chat hist
 - **Labels go on the epic,** because children inherit them at creation: `repo:<name>` when
   the thread lives in one repo, and `area:<slug>` for the long-running area. Run
   `bd label list-all` and reuse an existing area label before you coin one.
+- **The epic's title names the thread in about 45 characters,** such as "CSV export without
+  stalls", because the board gives an epic row 18 fewer columns than a bead row. The intention
+  goes in the summary, never in the title.
 - **The epic states its intention and the deliverables a source commits to.** Its summary
   states the intention in Ben's or the customer's terms. Its `--acceptance` lists only the
   deliverables that Ben, the proposal or a filed customer item commits to, one per line with
@@ -343,11 +355,11 @@ so that `bd ready --parent <epic>` shows the next piece. Write each child's desc
 the session that will start it, because by then the context that filed it is gone.
 
 ```bash
-epic=$(bd create "CSV export no longer stalls other requests" -t epic -p 1 -l repo:<repo>,area:export \
+epic=$(bd create "CSV export without stalls" -t epic -p 1 -l repo:<repo>,area:export \
      --acceptance "users can export a full report while other requests keep working (customer ticket 412)" --silent)
-a=$(bd create "export_csv runs off the event loop, with route, tests and PR" --parent "$epic" -p 0 \
+a=$(bd create "Move export_csv off the event loop" --parent "$epic" -p 0 \
      -l kind:feature,ben:none --acceptance "make test exits 0 and the PR is merged" --silent)
-b=$(bd create "Measure the async export's latency on dev" --parent "$epic" --deps "$a" -p 1 \
+b=$(bd create "How much latency does the async export save on dev?" --parent "$epic" --deps "$a" -p 1 \
      -l kind:experiment,ben:review --acceptance "the export's latency on dev, before and after the change, is reported on the bead" --silent)
 bd update "$a" --claim
 bd close "$a" --reason "PR <repo>#123 at 3f2c1ab; asyncio.to_thread offload; 202 + job id"
@@ -444,7 +456,7 @@ Deferred work gets the full description, a `repo` label and the run labels. Writ
 description to `${CLAUDE_JOB_DIR:-$TMPDIR}/bead-<slug>.md`, then file it:
 
 ```bash
-bd create "<outcome title>" -t task|bug|chore -p <0-3> \
+bd create "<short title: verb and object, or the question>" -t task|bug|chore -p <0-3> \
   -l repo:<repo>,kind:<kind>,ben:<none|review|plan|pair>[,mode:<low|ultrathink|ultracode>] \
   --acceptance "<the deliverable, plus any line a source asks for, with its source>" \
   --body-file "${CLAUDE_JOB_DIR:-$TMPDIR}/bead-<slug>.md" --silent
